@@ -1,6 +1,5 @@
 import * as cdk from 'aws-cdk-lib';
 import * as iam from 'aws-cdk-lib/aws-iam';
-import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as sns from 'aws-cdk-lib/aws-sns';
@@ -108,17 +107,66 @@ export class AgentCoreStack extends cdk.Stack {
       path: path.join(__dirname, '../../payer-agent/openapi/content-tools.yaml'),
     });
 
-    // Secret for CDP API credentials
-    const cdpSecret = new secretsmanager.Secret(this, 'CdpApiSecret', {
-      secretName: 'x402-payer-agent/cdp-credentials',
-      description: 'Coinbase Developer Platform API credentials for x402 payer agent',
-      generateSecretString: {
-        secretStringTemplate: JSON.stringify({
-          CDP_API_KEY_NAME: 'REPLACE_WITH_YOUR_KEY_NAME',
-        }),
-        generateStringKey: 'CDP_API_KEY_PRIVATE_KEY',
-      },
+    // ==========================================
+    // AgentCore Payments IAM Roles
+    // ==========================================
+
+    // ProcessPaymentRole — the agent assumes this role to call ProcessPayment.
+    // It can ONLY call ProcessPayment — no session/instrument creation.
+    const processPaymentRole = new iam.Role(this, 'ProcessPaymentRole', {
+      roleName: 'AgentCorePaymentsProcessPaymentRole',
+      assumedBy: new iam.AccountRootPrincipal(),
+      description: 'IAM role for the agent to call ProcessPayment only',
     });
+    processPaymentRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['bedrock-agentcore:ProcessPayment'],
+      resources: ['*'],
+    }));
+
+    // ManagementRole — the app backend uses this to create instruments and sessions.
+    // Explicitly denies ProcessPayment so the backend cannot spend.
+    const managementRole = new iam.Role(this, 'PaymentsManagementRole', {
+      roleName: 'AgentCorePaymentsManagementRole',
+      assumedBy: new iam.AccountRootPrincipal(),
+      description: 'IAM role for app backend to manage instruments and sessions (cannot spend)',
+    });
+    managementRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'bedrock-agentcore:CreatePaymentInstrument',
+        'bedrock-agentcore:GetPaymentInstrument',
+        'bedrock-agentcore:ListPaymentInstruments',
+        'bedrock-agentcore:CreatePaymentSession',
+        'bedrock-agentcore:GetPaymentSession',
+        'bedrock-agentcore:ListPaymentSessions',
+        'bedrock-agentcore:UpdatePaymentSession',
+      ],
+      resources: ['*'],
+    }));
+    managementRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.DENY,
+      actions: ['bedrock-agentcore:ProcessPayment'],
+      resources: ['*'],
+    }));
+
+    // ResourceRetrievalRole — assumed by AgentCore Payments service at runtime.
+    // Trust: bedrock-agentcore.amazonaws.com
+    const resourceRetrievalRole = new iam.Role(this, 'PaymentsResourceRetrievalRole', {
+      roleName: 'AgentCorePaymentsResourceRetrievalRole',
+      assumedBy: new iam.ServicePrincipal('bedrock-agentcore.amazonaws.com'),
+      description: 'Service role for AgentCore Payments to access credentials at runtime',
+    });
+    resourceRetrievalRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'bedrock-agentcore:RetrieveToken',
+        'bedrock-agentcore:GetIdentity',
+        'secretsmanager:GetSecretValue',
+        'sts:SetContext',
+      ],
+      resources: ['*'],
+    }));
 
     // IAM Role for AgentCore Runtime
     const agentRuntimeRole = new iam.Role(this, 'AgentRuntimeRole', {
@@ -144,13 +192,11 @@ export class AgentCoreStack extends cdk.Stack {
       ],
     }));
 
-    // Secrets Manager access
+    // Allow the agent runtime to assume ProcessPaymentRole
     agentRuntimeRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
-      actions: [
-        'secretsmanager:GetSecretValue',
-      ],
-      resources: [cdpSecret.secretArn],
+      actions: ['sts:AssumeRole'],
+      resources: [processPaymentRole.roleArn],
     }));
 
     // CloudWatch Logs access
@@ -696,10 +742,22 @@ export class AgentCoreStack extends cdk.Stack {
     );
 
     // Outputs
-    new cdk.CfnOutput(this, 'CdpSecretArn', {
-      value: cdpSecret.secretArn,
-      description: 'ARN of the CDP credentials secret',
-      exportName: 'X402PayerAgentCdpSecretArn',
+    new cdk.CfnOutput(this, 'ProcessPaymentRoleArn', {
+      value: processPaymentRole.roleArn,
+      description: 'ARN of the ProcessPayment IAM role (agent assumes this)',
+      exportName: 'X402PayerAgentProcessPaymentRoleArn',
+    });
+
+    new cdk.CfnOutput(this, 'ManagementRoleArn', {
+      value: managementRole.roleArn,
+      description: 'ARN of the Payments Management IAM role (app backend uses this)',
+      exportName: 'X402PayerAgentManagementRoleArn',
+    });
+
+    new cdk.CfnOutput(this, 'ResourceRetrievalRoleArn', {
+      value: resourceRetrievalRole.roleArn,
+      description: 'ARN of the Resource Retrieval service role (AgentCore Payments assumes this)',
+      exportName: 'X402PayerAgentResourceRetrievalRoleArn',
     });
 
     new cdk.CfnOutput(this, 'AgentRuntimeRoleArn', {
@@ -900,22 +958,34 @@ export class AgentCoreStack extends cdk.Stack {
       value: `
 After deploying this stack:
 
-1. Update the CDP secret with your actual credentials:
-   aws secretsmanager put-secret-value --secret-id ${cdpSecret.secretName} --secret-string '{"CDP_API_KEY_NAME":"your-key","CDP_API_KEY_PRIVATE_KEY":"your-private-key"}'
+1. Set up AgentCore Payments resources (one-time):
+   cd agentcore-payments-beta/quickstart
+   cp .env.sample .env  # Fill in Coinbase CDP keys
+   bash setup_model.sh   # Install boto3 service models
+   bash setup_manager.sh # Creates credential provider, manager, connector
+   # Save the output: MANAGER_ARN, CONNECTOR_ID
 
-2. Deploy the seller infrastructure first (if not already deployed):
+2. Create a Payment Instrument and Session (app backend):
+   cd agentcore-payments-beta/scripts
+   cp .env.sample .env  # Fill in MANAGER_ARN, CONNECTOR_ID, role ARNs
+   bash e2e-test.sh     # Creates instrument + session
+   # Save: PAYMENT_INSTRUMENT_ID, PAYMENT_SESSION_ID
+
+3. Deploy the seller infrastructure first (if not already deployed):
    cd seller-infrastructure && npm install && cdk deploy
    # Note the CloudFront URL from the output
 
-3. Set the seller CloudFront URL environment variable:
-   export X402_SELLER_CLOUDFRONT_URL=https://dXXXXXXXXXXXXX.cloudfront.net
+4. Configure the payer agent environment:
+   cd payer-agent && cp .env.example .env
+   # Fill in: MANAGER_ARN, PAYMENT_SESSION_ID, PAYMENT_INSTRUMENT_ID,
+   #          PROCESS_PAYMENT_ROLE_ARN, USER_ID, SELLER_API_URL
 
-4. Create AgentCore Runtime via CLI or console:
+5. Create AgentCore Runtime via CLI or console:
    - Use the agent code from payer-agent/
    - Assign the runtime role: ${agentRuntimeRole.roleArn}
    - See payer-agent/agentcore_config.yaml for configuration
 
-5. Create AgentCore Gateway with MCP tool server:
+6. Create AgentCore Gateway with MCP tool server:
    - Point to the Runtime endpoint
    - Assign the gateway role: ${this.gatewayRole.roleArn}
    - Configure IAM SigV4 authentication
@@ -923,46 +993,21 @@ After deploying this stack:
      * Requests per second: ${this.rateLimitConfig.requestsPerSecond}
      * Burst capacity: ${this.rateLimitConfig.burstCapacity}
      * Limit by: ${this.rateLimitConfig.limitBy}
-   - See payer-agent/gateway_config.yaml for full configuration
 
-6. Configure Gateway Target for MCP tools:
+7. Configure Gateway Target for MCP tools:
    - Target name: x402-content-tools
    - Target type: OPENAPI
    - OpenAPI spec S3 URI: s3://${this.openApiSpecAsset.s3BucketName}/${this.openApiSpecAsset.s3ObjectKey}
    - Target URL: ${sellerCloudFrontUrl}
    - Assign target role: ${this.gatewayTargetRole.roleArn}
-   - Configure x402 header passthrough (see gateway_config.yaml)
-   - Note the Gateway Target ID for tool ARN construction
 
-7. Subscribe to rate limit alarms (optional):
+8. Subscribe to rate limit alarms (optional):
    aws sns subscribe --topic-arn ${this.rateLimitAlarmTopic.topicArn} --protocol email --notification-endpoint your-email@example.com
 
-8. Grant Gateway access to clients:
-   - Attach the invoke policy to IAM users/roles that need access
-   - Policy ARN: ${gatewayInvokePolicy.managedPolicyArn}
-
-9. Test MCP tool discovery:
-   curl -X GET "https://<gateway-url>/v1/mcp/tools" -H "Authorization: AWS4-HMAC-SHA256 ..."
-
-10. Monitor the Gateway:
-    - View logs in CloudWatch: ${this.gatewayLogGroup.logGroupName}
-    - View target logs: ${gatewayTargetLogGroup.logGroupName}
-    - View dashboard: https://${this.region}.console.aws.amazon.com/cloudwatch/home?region=${this.region}#dashboards:name=x402-payer-agent-gateway
-    - Rate limit alarms will notify via SNS topic
-
-MCP Tool Endpoints:
-- Discovery: GET /v1/mcp/tools
-- Invocation: POST /v1/mcp/invoke
-- Tool Schema: GET /v1/mcp/tools/{tool_name}/schema
-
-Tool ARN Pattern:
-  arn:aws:bedrock-agentcore:${this.region}:${this.account}:gateway-target/{GATEWAY_TARGET_ID}/tool/{TOOL_NAME}
-
-Available MCP Tools (x402 payment required):
-- get_premium_article (0.001 USDC)
-- get_weather_data (0.0005 USDC)
-- get_market_analysis (0.002 USDC)
-- get_research_report (0.005 USDC)
+AgentCore Payments Roles:
+- ProcessPaymentRole: ${processPaymentRole.roleArn}
+- ManagementRole: ${managementRole.roleArn}
+- ResourceRetrievalRole: ${resourceRetrievalRole.roleArn}
 
 See: https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/
       `,
@@ -972,12 +1017,20 @@ See: https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/
     // ==========================================
     // CDK Nag Suppressions
     // ==========================================
-    NagSuppressions.addResourceSuppressions(cdpSecret, [
-      { id: 'AwsSolutions-SMG4', reason: 'CDP API keys are managed externally by Coinbase — automatic rotation not applicable' },
-    ]);
-
     NagSuppressions.addResourceSuppressions(agentRuntimeRole, [
       { id: 'AwsSolutions-IAM5', reason: 'Wildcards required: cross-region inference profiles (bedrock:*), CloudWatch log groups (/aws/bedrock-agentcore/*), and ecr:GetAuthorizationToken requires resource *' },
+    ], true);
+
+    NagSuppressions.addResourceSuppressions(processPaymentRole, [
+      { id: 'AwsSolutions-IAM5', reason: 'ProcessPayment needs resource * because payment manager ARNs are dynamic' },
+    ], true);
+
+    NagSuppressions.addResourceSuppressions(managementRole, [
+      { id: 'AwsSolutions-IAM5', reason: 'Management role needs resource * for instrument/session CRUD across payment managers' },
+    ], true);
+
+    NagSuppressions.addResourceSuppressions(resourceRetrievalRole, [
+      { id: 'AwsSolutions-IAM5', reason: 'Service role needs broad access to retrieve credentials from AgentCore Identity' },
     ], true);
 
     NagSuppressions.addResourceSuppressions(this.gatewayRole, [

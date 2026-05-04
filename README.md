@@ -1,12 +1,12 @@
 # x402 Payments using Amazon Bedrock AgentCore
 
-HTTP 402 payment-gated content delivery using AWS Bedrock AgentCore and Coinbase AgentKit, paying a seller operating on CloudFront, Lambda@Edge, and S3.
+HTTP 402 payment-gated content delivery using AWS Bedrock AgentCore and AgentCore Payments, paying a seller operating on CloudFront, Lambda@Edge, and S3.
 
 ## Overview
 
 This project demonstrates a payment-gated content delivery system using the [x402 protocol](https://github.com/coinbase/x402):
 
-- **Payer**: AI agent on Bedrock AgentCore Runtime with Coinbase AgentKit wallet
+- **Payer**: AI agent on Bedrock AgentCore Runtime with AgentCore Payments (ProcessPayment API)
 - **Seller**: CloudFront + Lambda@Edge for x402 payment verification
 - **Web UI**: React demo interface
 
@@ -40,17 +40,15 @@ flowchart LR
                 Gateway["Gateway\n(MCP Tool Server, IAM SigV4)"]
                 Runtime["Runtime\n(Session Management)"]
                 Agent["Strands Agent\n(Python)"]
-                Wallet["AgentKit Wallet\n(CDP, EIP-3009)"]
                 Gateway --> Runtime
                 Runtime --> Agent
-                Agent --> Wallet
             end
+            Payments["AgentCore Payments\n(ProcessPayment API)"]
             Bedrock["Amazon Bedrock\n(Claude Sonnet)"]
-            Secrets["AWS Secrets Manager\n(CDP Credentials)"]
             CW["Amazon CloudWatch\n(Dashboards, Alarms)"]
             S3_Spec["Amazon S3\n(OpenAPI Spec)"]
+            Agent --> Payments
             Agent --> Bedrock
-            Agent --> Secrets
             Gateway --> S3_Spec
         end
 
@@ -67,7 +65,6 @@ flowchart LR
 
     Facilitator["x402 Facilitator\n(x402.org)"]
     Blockchain["Base Sepolia\n(USDC Testnet)"]
-    CDP["Coinbase Developer\nPlatform API"]
 
     Browser -->|"HTTPS"| CF_UI
     Browser -->|"API Calls"| APIGW
@@ -75,13 +72,13 @@ flowchart LR
     Agent -->|"HTTPS +\nx402 Headers"| CF_Seller
     LambdaEdge -->|"Verify & Settle"| Facilitator
     Facilitator -->|"On-chain\nSettlement"| Blockchain
-    Wallet -->|"Wallet Ops"| CDP
+    Payments -->|"Sign & Pay"| Blockchain
     Lambda_Proxy -->|"eth_call\n(Balance)"| Blockchain
 ```
 
 Three CDK stacks deploy into a single AWS account:
 - **web-ui-infrastructure** — CloudFront + S3 for the React app, API Gateway + Lambda proxy to AgentCore
-- **payer-infrastructure** — IAM roles, Secrets Manager, CloudWatch observability for Bedrock AgentCore (Runtime, Gateway, Agent)
+- **payer-infrastructure** — IAM roles (including AgentCore Payments roles), CloudWatch observability for Bedrock AgentCore (Runtime, Gateway, Agent)
 - **seller-infrastructure** — CloudFront + Lambda@Edge for x402 payment-gated content, S3 content bucket
 
 AgentCore Gateway acts as an MCP tool server:
@@ -98,12 +95,13 @@ The Web UI guides users through a 3-step payment process:
    - User selects content item
    - Agent requests content from CloudFront
    - Lambda@Edge returns `402 Payment Required` with x402 headers
-   - Agent analyzes payment requirements and reports back
+   - Agent extracts x402_payload and reports payment requirements
 
 2. **Step 2: Confirm Payment**
    - User confirms payment
-   - Agent signs payment with AgentKit wallet (EIP-3009)
-   - Agent retries request with `X-PAYMENT` header
+   - Agent calls ProcessPayment via AgentCore Payments (passes x402_payload as-is)
+   - AgentCore signs the transaction server-side
+   - Agent retries request with payment proof header (X-PAYMENT or PAYMENT-SIGNATURE)
    - Lambda@Edge verifies signature via x402 facilitator
    - Facilitator settles payment on-chain
    - Agent confirms successful payment
@@ -121,7 +119,7 @@ The Web UI guides users through a 3-step payment process:
 | Agent Runtime | [Amazon Bedrock AgentCore](https://docs.aws.amazon.com/bedrock-agentcore/) |
 | Tool Discovery | MCP Protocol via Gateway |
 | LLM | Amazon Bedrock (Claude Sonnet) |
-| Wallet | [Coinbase AgentKit](https://docs.cdp.coinbase.com/agent-kit/welcome) |
+| Payments | [Amazon Bedrock AgentCore Payments](https://docs.aws.amazon.com/bedrock-agentcore/) (ProcessPayment API) |
 | Content Delivery | CloudFront + Lambda@Edge |
 | Payment Protocol | [x402](https://github.com/coinbase/x402) |
 | Network | Base Sepolia (testnet) |
@@ -131,13 +129,13 @@ The Web UI guides users through a 3-step payment process:
 
 ```
 sample-agentcore-cloudfront-x402-payments/
-├── payer-agent/              # AI Agent (Python) - Strands agent with AgentKit wallet
+├── payer-agent/              # AI Agent (Python) - Strands agent with AgentCore Payments
 │   ├── agent/                # Agent implementation & tools
 │   ├── openapi/              # OpenAPI specs for Gateway targets
 │   ├── scripts/              # Deployment & test scripts
-│   └── tests/                # Test suite (355 tests)
+│   └── tests/                # Test suite
 │
-├── payer-infrastructure/     # CDK Stack for AgentCore Runtime
+├── payer-infrastructure/     # CDK Stack for AgentCore Runtime + Payments IAM
 │   └── lib/
 │       ├── agentcore-stack.ts
 │       └── observability-stack.ts
@@ -161,10 +159,9 @@ sample-agentcore-cloudfront-x402-payments/
 │       ├── web-ui-stack.ts   # CloudFront + S3 + API Gateway
 │       └── lambda/           # API proxy for AgentCore
 │
+├── agentcore-payments-beta/  # AgentCore Payments quickstart & reference
 ├── scripts/                  # Setup & verification scripts
-├── docs/                     # Documentation
-├── x402/                     # x402 protocol (cloned dependency)
-└── agentkit/                 # Coinbase AgentKit (cloned dependency)
+└── docs/                     # Documentation
 ```
 
 ### Two CloudFront Distributions
@@ -192,14 +189,12 @@ Get your URLs from CDK deployment outputs or CloudFormation console.
 
 ### Wallet Addresses (Base Sepolia Testnet)
 
-Wallets are created during setup:
-
 | Role | Source | Description |
 |------|--------|-------------|
-| Payer (Agent) | CDP API | Created automatically by AgentKit |
-| Seller | CDP API or your own | Set `PAYMENT_RECIPIENT_ADDRESS` in `seller-infrastructure/.env` |
+| Payer (Agent) | AgentCore Payments | Created via CreatePaymentInstrument API |
+| Seller | Your own wallet | Set `PAYMENT_RECIPIENT_ADDRESS` in `seller-infrastructure/.env` |
 
-To create a seller wallet via CDP, see [Creating a Seller Wallet](#creating-a-seller-wallet) below.
+The payer wallet is managed by AgentCore Payments — the agent never sees private keys. Fund it with USDC at https://faucet.circle.com/ (Base Sepolia).
 
 ## Agent Tools
 
@@ -207,11 +202,9 @@ Built-in tools:
 
 | Tool | Description |
 |------|-------------|
-| `get_wallet_balance` | Check wallet balance |
-| `analyze_payment` | Analyze payment requirements |
-| `sign_payment` | Sign payment (EIP-3009) |
-| `request_faucet_funds` | Request testnet tokens |
-| `check_faucet_eligibility` | Check if wallet is eligible for faucet |
+| `process_payment` | Execute x402 payment via AgentCore Payments ProcessPayment API |
+| `request_content` | Request content (detects 402, returns raw x402_payload) |
+| `request_content_with_payment` | Retry with payment proof header (auto-backoff) |
 
 Service discovery tools:
 
@@ -236,7 +229,8 @@ MCP tools (discovered via Gateway at `/mcp/tools`):
 ## Prerequisites
 
 - AWS Account with Bedrock AgentCore access
-- [Coinbase Developer Platform](https://portal.cdp.coinbase.com/) API keys
+- AgentCore Payments setup completed (see `agentcore-payments-beta/quickstart/`)
+- [Coinbase Developer Platform](https://portal.cdp.coinbase.com/) API keys (for credential provider setup)
 - Node.js 18+, Python 3.10+
 - AWS CDK CLI
 - Docker (for agent deployment to AgentCore)
@@ -250,18 +244,14 @@ See [QUICKSTART.md](QUICKSTART.md) for a streamlined deployment guide.
 ```bash
 git clone https://github.com/aws-samples/sample-agentcore-cloudfront-x402-payments
 cd sample-agentcore-cloudfront-x402-payments
-
-# Clone dependencies
-git clone https://github.com/coinbase/x402.git
-git clone https://github.com/coinbase/agentkit.git
 ```
 
 ### 2. Configure credentials
 
 ```bash
-# Payer agent - set your CDP wallet credentials
+# Payer agent - set AgentCore Payments config
 cp payer-agent/.env.example payer-agent/.env
-# Edit payer-agent/.env → set CDP_API_KEY_ID, CDP_API_KEY_SECRET, CDP_WALLET_SECRET
+# Edit payer-agent/.env → set MANAGER_ARN, PAYMENT_SESSION_ID, etc.
 
 # Seller infrastructure - set your wallet address
 cp seller-infrastructure/.env.example seller-infrastructure/.env
@@ -271,25 +261,25 @@ cp seller-infrastructure/.env.example seller-infrastructure/.env
 ### 3. Deploy seller infrastructure
 
 ```bash
-cd sample-agentcore-cloudfront-x402-payments/seller-infrastructure
+cd seller-infrastructure
 npm install
 npx cdk bootstrap  # First time only
 npx cdk deploy
 ```
 
-### 4. Sync environment variables
-
-This automatically pulls the CloudFront URL from the seller stack and updates `payer-agent/.env`:
+### 4. Set up AgentCore Payments
 
 ```bash
-cd sample-agentcore-cloudfront-x402-payments
-./scripts/sync-env.sh
+cd agentcore-payments-beta/quickstart
+cp .env.sample .env
+# Fill in Coinbase CDP keys
+bash setup_roles.sh && bash setup_model.sh && bash setup_manager.sh
 ```
 
 ### 5. Deploy payer infrastructure
 
 ```bash
-cd sample-agentcore-cloudfront-x402-payments/payer-infrastructure
+cd payer-infrastructure
 npm install
 npx cdk bootstrap  # First time only
 npx cdk deploy --all
@@ -297,17 +287,13 @@ npx cdk deploy --all
 
 ### 6. Deploy payer agent
 
-The deploy script automatically writes `AGENT_RUNTIME_ARN` back to `payer-agent/.env`.
-
 ```bash
-cd sample-agentcore-cloudfront-x402-payments/payer-agent
+cd payer-agent
 python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 python scripts/deploy_to_agentcore.py
 ```
-
-> **Important**: Without `AGENT_RUNTIME_ARN`, web-ui-infrastructure has no runtime to proxy to.
 
 ### 7. Run Web UI
 
@@ -390,7 +376,9 @@ pytest tests/test_error_scenarios.py -v   # Error handling
 ## Security
 
 - IAM SigV4 authentication via AgentCore Gateway
-- Wallet keys in AWS Secrets Manager
+- Wallet keys stored in AgentCore Identity (agent never sees private keys)
+- 4-role IAM model: agent can only call ProcessPayment, not create sessions or instruments
+- Session-level spending limits enforced server-side
 - Cryptographic signature validation via x402 facilitator
 - Session isolation in AgentCore Runtime
 
@@ -406,7 +394,6 @@ pytest tests/test_error_scenarios.py -v   # Error handling
 - [x402 CloudFront + Lambda@Edge Example](https://github.com/coinbase/x402/tree/main/examples/typescript/servers/cloudfront-lambda-edge) — the seller infrastructure in this project is based on this example
 - [Strands Agents Documentation](https://strandsagents.com/latest/documentation/docs/)
 - [Bedrock AgentCore Documentation](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/)
-- [Coinbase AgentKit Documentation](https://docs.cdp.coinbase.com/agentkit/docs/welcome)
 - [EIP-3009: Transfer With Authorization](https://eips.ethereum.org/EIPS/eip-3009)
 
 ## Creating a Seller Wallet
@@ -415,7 +402,7 @@ You need a wallet address on Base Sepolia to receive payments. Options:
 
 1. **CDP Portal** (recommended): Create at [portal.cdp.coinbase.com](https://portal.cdp.coinbase.com/)
 2. **MetaMask**: Add Base Sepolia network and use your address
-3. **CDP API**: Use the AgentKit SDK to create programmatically
+3. **Any EVM wallet**: Any wallet that supports Base Sepolia testnet
 
 Set your wallet address in `seller-infrastructure/.env`:
 ```bash

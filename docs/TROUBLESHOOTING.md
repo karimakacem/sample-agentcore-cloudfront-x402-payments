@@ -43,14 +43,9 @@ cdk --version
 
 ### Missing x402 or agentkit directories
 
-**Cause**: Required dependencies not cloned.
+**Cause**: These are no longer required. The project uses AgentCore Payments instead of AgentKit.
 
-**Solution**:
-```bash
-cd sample-agentcore-cloudfront-x402-payments
-git clone https://github.com/coinbase/x402.git
-git clone https://github.com/coinbase/agentkit.git
-```
+**Solution**: No action needed. If you see references to these directories in old scripts, they can be ignored.
 
 ### Python version mismatch
 
@@ -160,23 +155,21 @@ aws bedrock-agent-runtime invoke-agent \
 2. Check CloudWatch logs for errors
 3. Verify `BEDROCK_MODEL_ID` in `.env` is correct
 
-### "Wallet not initialized" error
+### "ProcessPaymentRole not found" error
 
-**Cause**: CDP credentials not configured or invalid.
+**Cause**: AgentCore Payments IAM roles not created.
 
 **Solution**:
-1. Verify CDP credentials in `payer-agent/.env`:
+1. Deploy the payer infrastructure CDK stack:
 ```bash
-CDP_API_KEY_ID=your_actual_key_id
-CDP_API_KEY_SECRET=your_actual_secret
-CDP_WALLET_SECRET=your_wallet_secret
+cd payer-infrastructure
+npx cdk deploy
 ```
 
-2. Test credentials:
+2. Or create roles manually:
 ```bash
-cd payer-agent
-source .venv/bin/activate
-python -c "from agent.tools.payment import get_wallet_balance; print(get_wallet_balance())"
+cd agentcore-payments-beta/quickstart
+bash setup_roles.sh
 ```
 
 ### Rate limiting errors
@@ -216,37 +209,51 @@ OTEL_CONSOLE_EXPORT=true
 
 ## Wallet & Payment Issues
 
-### "402 Payment Required but no wallet balance"
+### "402 Payment Required but ProcessPayment fails"
 
-**Cause**: Wallet has no testnet tokens.
+**Cause**: Session budget exceeded, instrument not funded, or role assumption failed.
 
 **Solution**:
-Request tokens from the CDP faucet:
+1. Check the error message from ProcessPayment:
+   - "Budget exceeded" → Create a new session with higher `maxSpendAmount`
+   - "Insufficient funds" → Fund the wallet at https://faucet.circle.com/ (Base Sepolia)
+   - "Access denied" → Verify `PROCESS_PAYMENT_ROLE_ARN` is correct and assumable
+
+2. Verify your configuration:
 ```bash
-cd payer-agent
-source .venv/bin/activate
-python -c "from agent.tools.payment import request_faucet_funds; print(request_faucet_funds())"
+# Check env vars are set
+grep MANAGER_ARN payer-agent/.env
+grep PAYMENT_SESSION_ID payer-agent/.env
+grep PAYMENT_INSTRUMENT_ID payer-agent/.env
 ```
 
-Or via the agent:
-```
-> Request testnet ETH from the faucet
-```
+### "No payment proof available"
 
-### "Faucet service unavailable"
+**Cause**: `request_content_with_payment` called before `process_payment`.
 
-**Cause**: CDP faucet rate limited or temporarily down.
+**Solution**: The payment flow must be: `request_content` → `process_payment` → `request_content_with_payment`. Ensure `process_payment` returned `status: PROOF_GENERATED` before retrying.
+
+### "STS AssumeRole failed"
+
+**Cause**: The agent's execution role cannot assume ProcessPaymentRole.
 
 **Solution**:
-1. Wait 24 hours (faucet has daily limits per wallet)
-2. Use a different wallet address
-3. Get testnet tokens from alternative faucets:
-   - [Base Sepolia Faucet](https://www.coinbase.com/faucets/base-ethereum-goerli-faucet)
-   - [Alchemy Faucet](https://sepoliafaucet.com/)
+1. Verify the ProcessPaymentRole trust policy allows your account:
+```bash
+aws iam get-role --role-name AgentCorePaymentsProcessPaymentRole \
+  --query "Role.AssumeRolePolicyDocument"
+```
 
-### Payment signature rejected
+2. Verify the agent's role has `sts:AssumeRole` permission on the ProcessPaymentRole ARN.
 
-**Cause**: Signature validation failed at the seller.
+3. Deploy the CDK stack to create/update roles:
+```bash
+cd payer-infrastructure && npx cdk deploy
+```
+
+### Payment signature rejected by seller
+
+**Cause**: Signature validation failed at the x402 facilitator.
 
 **Solution**:
 Check the `X-PAYMENT-REQUIRED` header for specific error:
@@ -257,14 +264,14 @@ Check the `X-PAYMENT-REQUIRED` header for specific error:
 - `invalid_exact_evm_payload_authorization_valid_before` - Payment expired
 - `asset_mismatch` - Wrong payment asset (should be USDC)
 
-### "User rejected signing request"
+### Payment still returns 402 after ProcessPayment succeeds
 
-**Cause**: Wallet provider rejected the transaction.
+**Cause**: On-chain transaction hasn't settled yet.
 
-**Solution**:
-1. Check wallet has sufficient balance for gas
-2. Verify the transaction parameters are valid
-3. Check CDP API key permissions include signing
+**Solution**: The `request_content_with_payment` tool automatically retries with exponential backoff (up to 6 attempts). If it still fails:
+1. Wait a few minutes for on-chain settlement
+2. Check the wallet has sufficient USDC balance
+3. Verify the transaction on [Base Sepolia Explorer](https://sepolia.basescan.org/)
 
 ---
 
@@ -832,15 +839,18 @@ import base64, json
 req = json.loads(base64.b64decode(response.headers["X-PAYMENT-REQUIRED"]))
 print(json.dumps(req, indent=2))
 
-# 3. Sign payment (via agent tools)
-from agent.tools.payment import sign_payment
-result = await sign_payment(
-    scheme=req["accepts"][0]["scheme"],
-    network="base-sepolia",
-    amount=req["accepts"][0]["amount"],
-    recipient=req["accepts"][0]["payTo"]
+# 3. Call ProcessPayment (via agent tools)
+from agent.tools.payment import process_payment
+result = process_payment(
+    x402_payload=req["accepts"][0],
+    x402_version=req.get("x402Version", 1),
 )
 print(result)
+
+# 4. Retry with payment proof
+from agent.tools.content import request_content_with_payment
+paid = request_content_with_payment("/api/premium-article")
+print(paid)
 ```
 
 ### Check CloudWatch logs
@@ -870,7 +880,7 @@ aws bedrock list-foundation-models --query "modelSummaries[?contains(modelId, 'c
 If you're still stuck:
 
 1. Check the [x402 GitHub Issues](https://github.com/coinbase/x402/issues)
-2. Review [AgentKit Documentation](https://docs.cdp.coinbase.com/agent-kit/welcome)
+2. Review [AgentCore Payments docs](agentcore-payments-beta/docs/getting-started.md)
 3. Consult [Strands Agents Docs](https://strandsagents.com/)
 4. Check [Bedrock AgentCore Docs](https://docs.aws.amazon.com/bedrock-agentcore/)
 
