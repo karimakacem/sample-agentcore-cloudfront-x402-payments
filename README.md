@@ -2,7 +2,7 @@
 
 HTTP 402 payment-gated content delivery using AWS Bedrock AgentCore and AgentCore Payments, paying a seller operating on CloudFront, Lambda@Edge, and S3.
 
-> **Update — May 7, 2026:** AWS has launched [Amazon Bedrock AgentCore Payments](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/) (Preview) — bringing native, managed payment capabilities to AI agents built on Amazon Bedrock. AgentCore Payments lets agents autonomously discover, authorize, and execute x402 micropayments with built-in wallet management, policy-based spending controls, and a full audit trail — no custom payment infrastructure required. The architectures and reference implementations described in this repo now integrate directly with AgentCore Payments. [Get started with AgentCore Payments.](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/)
+> **Update — May 7, 2026:** AWS has launched [Amazon Bedrock AgentCore Payments](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/payments.html) (Preview) — bringing native, managed payment capabilities to AI agents built on Amazon Bedrock. AgentCore Payments lets agents autonomously discover, authorize, and execute x402 micropayments with built-in wallet management, policy-based spending controls, and a full audit trail — no custom payment infrastructure required. The architectures and reference implementations described in this repo now integrate directly with AgentCore Payments. [Get started with AgentCore Payments.](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/payments.html)
 
 ## Overview
 
@@ -395,7 +395,7 @@ pytest tests/test_error_scenarios.py -v   # Error handling
 - [x402 Protocol Specification](https://github.com/coinbase/x402/tree/main/specs)
 - [x402 CloudFront + Lambda@Edge Example](https://github.com/coinbase/x402/tree/main/examples/typescript/servers/cloudfront-lambda-edge) — the seller infrastructure in this project is based on this example
 - [Strands Agents Documentation](https://strandsagents.com/latest/documentation/docs/)
-- [Bedrock AgentCore Documentation](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/)
+- [Bedrock AgentCore Documentation](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/payments.html)
 - [EIP-3009: Transfer With Authorization](https://eips.ethereum.org/EIPS/eip-3009)
 
 ## Creating a Seller Wallet

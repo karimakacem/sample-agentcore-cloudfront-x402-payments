@@ -1009,7 +1009,7 @@ AgentCore Payments Roles:
 - ManagementRole: ${managementRole.roleArn}
 - ResourceRetrievalRole: ${resourceRetrievalRole.roleArn}
 
-See: https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/
+See: https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/payments.html
       `,
       description: 'Next steps for AgentCore setup',
     });
