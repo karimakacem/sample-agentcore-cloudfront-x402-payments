@@ -56,7 +56,9 @@ Without this, you'd typically use DynamoDB with TTL-based cleanup, which is stra
 
 ### Secrets Integration
 
-The payer agent needs access to CDP (Coinbase Developer Platform) credentials for wallet operations. AgentCore integrates with Secrets Manager, so the agent can access these credentials without embedding them in code or environment variables.
+The payer agent needs access to AgentCore Payments for wallet operations. AgentCore Payments stores wallet credentials (CDP API keys) in AgentCore Identity via Payment Credential Providers. The agent never sees private keys — it only calls the ProcessPayment API, which signs transactions server-side.
+
+This is a significant security improvement over the previous approach of storing CDP keys in Secrets Manager and loading them into the agent process.
 
 ## What This Means for the Demo
 
@@ -67,7 +69,7 @@ The x402 payment flow is the interesting part of this demo. AgentCore lets us fo
 | Compute | Lambda + custom handler | Runtime deployment |
 | Auth | API Gateway + authorizer | Gateway with SigV4 |
 | State | DynamoDB + session logic | Memory service |
-| Secrets | Secrets Manager + IAM roles | Built-in integration |
+| Payments | Manual wallet + signing | AgentCore Payments (ProcessPayment API) |
 | Monitoring | CloudWatch setup | Included |
 
 This isn't to say the "without AgentCore" approach is bad—it's how most production systems work today. But for a demo, the reduced setup time is valuable.
@@ -84,10 +86,10 @@ Strands uses decorators to define tools. The type hints and docstrings are used 
 
 ```python
 @tool
-def analyze_payment(amount: str, currency: str, recipient: str) -> dict:
-    """Analyze a payment request and decide whether to approve it."""
-    # Implementation
-    return {"should_pay": True, "reasoning": "..."}
+def process_payment(x402_payload: dict, x402_version: int = 1) -> dict:
+    """Execute an x402 crypto payment via AgentCore Payments ProcessPayment API."""
+    # Implementation — calls boto3 ProcessPayment
+    return {"status": "PROOF_GENERATED", ...}
 ```
 
 This keeps the tool definition close to the implementation, which makes the code easier to follow.
@@ -116,4 +118,4 @@ LangChain and similar frameworks would also work for this use case. We chose Str
 2. The tool abstraction is lightweight—tools are just Python functions
 3. It's maintained by Amazon, so support and documentation align with AWS services
 
-The payer agent has 6 tools in about 500 lines of Python. Strands doesn't add much overhead to that.
+The payer agent has 7 tools in about 400 lines of Python. Strands doesn't add much overhead to that.

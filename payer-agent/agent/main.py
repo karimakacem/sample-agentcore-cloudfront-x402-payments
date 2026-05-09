@@ -1,18 +1,14 @@
 """Main agent definition for the x402 payer agent.
 
-This module defines the payer agent that handles x402 payment flows.
+This module defines the payer agent that handles x402 payment flows
+using Amazon Bedrock AgentCore Payments.
 
 ENTERPRISE-READY ARCHITECTURE:
 The agent uses dynamic service discovery instead of hardcoded tools:
 1. discover_services: Find available paid services from the Gateway
 2. request_service: Access any discovered service by name
-3. Autonomous purchasing with pre-approval lists
-
-This enables:
-- Dynamic tool/service discovery via Gateway MCP endpoint
-- No hardcoded knowledge of available services
-- Autonomous purchasing for pre-approved services
-- User confirmation for non-approved purchases
+3. process_payment: Execute payments via AgentCore Payments ProcessPayment API
+4. Autonomous purchasing with pre-approval lists + session budget enforcement
 """
 
 from typing import Callable, Optional
@@ -22,13 +18,7 @@ from strands.models import BedrockModel
 
 from .config import config
 from .tracing import init_tracing, get_tracer
-from .tools.payment import (
-    analyze_payment,
-    sign_payment,
-    get_wallet_balance,
-    request_faucet_funds,
-    check_faucet_eligibility,
-)
+from .tools.payment import process_payment
 from .tools.discovery import (
     discover_services,
     request_service,
@@ -42,94 +32,83 @@ from .tools.content import (
 from .mcp_client import MCPClient, discover_mcp_tools, get_mcp_client
 
 # Core tools that are always available to the agent
-# Discovery tools enable dynamic service discovery
-# Payment tools handle x402 payment negotiation
 CORE_TOOLS = [
     # Service Discovery (Enterprise-Ready)
     discover_services,
     request_service,
     list_approved_services,
     check_service_approval,
-    # Payment Tools
-    analyze_payment,
-    sign_payment,
-    get_wallet_balance,
-    request_faucet_funds,
-    check_faucet_eligibility,
-    # Legacy content tools (kept for backward compatibility)
+    # Payment Tool (AgentCore Payments)
+    process_payment,
+    # Content tools
     request_content,
     request_content_with_payment,
 ]
 
 SYSTEM_PROMPT = """You are an AI payment agent that helps users access paid services using the x402 protocol.
-
-## IMPORTANT: Dynamic Service Discovery
-
-You do NOT have hardcoded knowledge of available services. Instead, you MUST use the discover_services tool to find out what services are available. This is the enterprise-ready pattern.
+You process payments via Amazon Bedrock AgentCore Payments — a managed service that handles
+wallet management and transaction signing server-side. You operate under ProcessPaymentRole
+with a pre-set session budget and CANNOT create sessions, instruments, or override limits.
 
 ## Your Tools
 
 ### Service Discovery Tools (USE THESE FIRST)
-- discover_services: Find all available paid services from the Gateway. Call this to see what's available.
-- request_service: Request any discovered service by name. Handles x402 payment flow automatically.
+- discover_services: Find all available paid services from the Gateway.
+- request_service: Request any discovered service by name. Returns x402_payload on 402.
 - list_approved_services: See which services are pre-approved for autonomous purchasing.
 - check_service_approval: Check if a specific purchase is pre-approved.
 
-### Wallet Tools
-- get_wallet_balance: Check your USDC and ETH balance on Base Sepolia testnet
-- request_faucet_funds: Request free testnet tokens (ETH or USDC)
-- check_faucet_eligibility: Check if you can request faucet funds
+### Payment Tool
+- process_payment: Execute an x402 payment via AgentCore Payments ProcessPayment API.
+  Pass the x402_payload from a 402 response AS-IS. Do NOT parse individual fields.
 
-### Payment Tools  
-- analyze_payment: Evaluate payment requests and decide whether to approve
-- sign_payment: Sign blockchain transactions using your AgentKit wallet
+### Content Tools
+- request_content: Request content from the seller API. Returns x402_payload on 402.
+- request_content_with_payment: Retry with payment proof after process_payment succeeds.
 
-## Workflow for Accessing Paid Services
+## Payment Flow (Three Steps)
 
-### Step 1: Discover Available Services
-When a user asks about available services or wants to access content:
-1. Call discover_services() to get the list of available services
-2. Present the services to the user with their names, descriptions, and prices
+When an endpoint returns HTTP 402 (Payment Required):
 
-### Step 2: Request a Service
-When a user wants a specific service:
-1. Call request_service(service_name="<name>") 
-2. If you get a 402 response with payment_required:
-   a. Check if the service is pre-approved using check_service_approval
-   b. If pre-approved, proceed automatically
-   c. If not pre-approved, ask the user for confirmation
-3. Use sign_payment with the payment_required details
-4. Call request_service again with the payment_payload
-5. Return the content to the user
+1. **Detect 402**: Call request_content(url) or request_service(name).
+   The response includes x402_payload and x402_version.
 
-### Step 3: Autonomous Purchasing (Pre-Approved Services)
-For services on the approved list:
-1. Check approval with check_service_approval(service_name, price)
-2. If approved, proceed without asking the user
-3. Complete the payment and deliver the content
-4. Inform the user what was purchased and the cost
+2. **Pay**: Call process_payment(x402_payload=<the x402_payload>, x402_version=<version>).
+   Pass x402_payload AS-IS — do not reconstruct or cherry-pick fields.
+   Wait for status: "PROOF_GENERATED".
 
-## Example Conversations
+3. **Retry**: Call request_content_with_payment(url) or request_service(name) again.
+   The payment proof is automatically attached. Includes retry with backoff
+   for on-chain settlement.
+
+That's it — three tool calls.
+
+## Important Rules
+
+- ALWAYS pass x402_payload from the 402 response directly to process_payment.
+  The API accepts the raw merchant payload. Do NOT parse individual fields.
+- The x402_version from the 402 response tells process_payment how to handle the payload.
+- After process_payment succeeds, the proof is stored internally — just call the
+  retry tool with the URL.
+- Session budget (maxSpendAmount) is enforced server-side. If you exceed the budget,
+  ProcessPayment will reject the request.
+- For pre-approved services, proceed automatically. For others, ask the user first.
+- Always report the payment amount to the user before paying.
+
+## Workflow Examples
 
 User: "What services are available?"
-→ Call discover_services() and present the list
+→ Call discover_services() and present the list with prices.
 
-User: "Get me the weather data"
-→ Call request_service(service_name="get_weather_data")
-→ Handle 402 response, check approval, sign payment, retry with payment
-→ Return the weather data
+User: "Get me the premium article"
+→ request_content("/api/premium-article") → gets 402 with x402_payload
+→ process_payment(x402_payload=..., x402_version=...) → PROOF_GENERATED
+→ request_content_with_payment("/api/premium-article") → 200 with content
 
 User: "I want the research report"
-→ Call request_service(service_name="get_research_report")
-→ If not pre-approved, ask: "The research report costs 0.005 USDC. Should I proceed?"
-→ On confirmation, complete the payment flow
-
-## Payment Decision Guidelines
-- Always check wallet balance before approving payments
-- For pre-approved services, proceed automatically
-- For non-approved services, always ask for user confirmation
-- Explain the cost clearly before making any payment
-- Report transaction details after successful payments
+→ request_service("get_research_report") → gets 402
+→ Check approval, ask user if not pre-approved
+→ process_payment(...) → request_service("get_research_report") again → content
 
 ## Transparency Requirements
 Always be transparent about:
@@ -146,12 +125,12 @@ def create_payer_agent(
     custom_system_prompt: Optional[str] = None,
 ) -> Agent:
     """Create and configure the x402 payer agent.
-    
+
     Args:
         additional_tools: Optional list of additional tools to add to the agent.
                          These are typically MCP-discovered content tools.
         custom_system_prompt: Optional custom system prompt to override the default.
-    
+
     Returns:
         Configured Agent instance with core payment tools and any additional tools.
     """
@@ -160,7 +139,7 @@ def create_payer_agent(
         service_name="x402-payer-agent",
         enable_console_export=config.otel_console_export,
     )
-    
+
     model = BedrockModel(
         model_id=config.model_id,
         region_name=config.aws_region,
@@ -186,19 +165,19 @@ async def create_payer_agent_with_mcp(
     force_discovery: bool = False,
 ) -> Agent:
     """Create a payer agent with MCP-discovered tools.
-    
+
     This function discovers tools from the Gateway MCP endpoint and
     creates an agent with both core payment tools and discovered content tools.
-    
+
     Args:
         gateway_url: Optional Gateway URL for MCP discovery.
                     Uses config.seller_api_url if not provided.
         custom_system_prompt: Optional custom system prompt.
         force_discovery: Force tool discovery even if cached.
-    
+
     Returns:
         Configured Agent instance with core and MCP-discovered tools.
-        
+
     Raises:
         RuntimeError: If MCP tool discovery fails.
     """
@@ -207,7 +186,7 @@ async def create_payer_agent_with_mcp(
         gateway_url=gateway_url,
         force_refresh=force_discovery,
     )
-    
+
     # Create agent with discovered tools
     return create_payer_agent(
         additional_tools=mcp_tools,
@@ -217,10 +196,7 @@ async def create_payer_agent_with_mcp(
 
 def get_core_tools() -> list[Callable]:
     """Get the list of core payment tools.
-    
-    These tools are always available to the agent and handle
-    x402 payment negotiation and wallet operations.
-    
+
     Returns:
         List of core tool functions.
     """
@@ -229,22 +205,21 @@ def get_core_tools() -> list[Callable]:
 
 async def run_agent(user_message: str, additional_tools: Optional[list[Callable]] = None) -> str:
     """Run the agent with a user message and return the response.
-    
+
     Args:
         user_message: The user's input message.
         additional_tools: Optional list of additional tools (e.g., MCP-discovered tools).
-    
+
     Returns:
         The agent's response as a string.
     """
     agent = create_payer_agent(additional_tools=additional_tools)
     tracer = get_tracer()
-    
+
     with tracer.start_as_current_span("agent.run") as span:
         span.set_attribute("agent.message_length", len(user_message))
         span.set_attribute("agent.core_tools_count", len(CORE_TOOLS))
         span.set_attribute("agent.additional_tools_count", len(additional_tools) if additional_tools else 0)
-        # Strands Agent is callable directly
         response = agent(user_message)
         span.set_attribute("agent.response_length", len(str(response)))
         return str(response)
@@ -256,18 +231,15 @@ async def run_agent_with_mcp(
     force_discovery: bool = False,
 ) -> str:
     """Run the agent with MCP-discovered tools.
-    
-    This function discovers tools from the Gateway MCP endpoint,
-    creates an agent with those tools, and runs it with the user message.
-    
+
     Args:
         user_message: The user's input message.
         gateway_url: Optional Gateway URL for MCP discovery.
         force_discovery: Force tool discovery even if cached.
-    
+
     Returns:
         The agent's response as a string.
-        
+
     Raises:
         RuntimeError: If MCP tool discovery fails.
     """
@@ -276,15 +248,14 @@ async def run_agent_with_mcp(
         force_discovery=force_discovery,
     )
     tracer = get_tracer()
-    
+
     mcp_client = get_mcp_client()
     mcp_tools_count = len(mcp_client.get_strands_tools())
-    
+
     with tracer.start_as_current_span("agent.run_with_mcp") as span:
         span.set_attribute("agent.message_length", len(user_message))
         span.set_attribute("agent.core_tools_count", len(CORE_TOOLS))
         span.set_attribute("agent.mcp_tools_count", mcp_tools_count)
-        # Strands Agent is callable directly
         response = agent(user_message)
         span.set_attribute("agent.response_length", len(str(response)))
         return str(response)
@@ -293,25 +264,24 @@ async def run_agent_with_mcp(
 # Entry point for local testing
 if __name__ == "__main__":
     import asyncio
-    
+
     async def main():
-        # For local testing, try to discover MCP tools
         print("x402 Payer Agent initializing...")
-        print("Core tools: analyze_payment, sign_payment, get_wallet_balance")
-        
+        print("Core tools: process_payment, discover_services, request_service")
+        print(f"Payment Manager: {config.payment_manager_arn}")
+        print(f"Session: {config.payment_session_id}")
+
         try:
-            # Try to discover MCP tools
             mcp_tools = await discover_mcp_tools()
             print(f"Discovered {len(mcp_tools)} MCP tools")
-            for tool in mcp_tools:
-                print(f"  - {tool.__name__}")
-            
+            for t in mcp_tools:
+                print(f"  - {t.__name__}")
             agent = create_payer_agent(additional_tools=mcp_tools)
         except Exception as e:
             print(f"MCP discovery failed: {e}")
             print("Running with core tools only.")
             agent = create_payer_agent()
-        
+
         print("-" * 50)
         print("Type 'quit' to exit.")
 
@@ -319,8 +289,6 @@ if __name__ == "__main__":
             user_input = input("\nYou: ").strip()
             if user_input.lower() == "quit":
                 break
-
-            # Strands Agent is callable directly
             response = agent(user_input)
             print(f"\nAgent: {response}")
 

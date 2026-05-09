@@ -1,34 +1,49 @@
-"""Content request tools for the x402 payer agent."""
+"""Content request tools for the x402 payer agent.
+
+These tools handle requesting content from the seller API, detecting
+HTTP 402 payment requirements, and retrying with payment proof headers
+after a successful ProcessPayment call.
+"""
 
 import base64
 import json
 import time
 from typing import Any
+
 import httpx
 from strands import tool
 
 from ..config import config
 from ..tracing import get_tracer
 from ..metrics import get_metrics_emitter
+from .payment import get_last_payment_context
 
 
 @tool
 def request_content(url: str) -> dict[str, Any]:
-    """
-    Request content from the seller API.
+    """Request content from the seller API.
 
-    This may return a 402 Payment Required response with payment details.
+    If the endpoint returns HTTP 402 (Payment Required), the x402 payment
+    requirements are extracted and returned as x402_payload. Pass this
+    payload directly to process_payment.
+
+    Supports both x402 v1 (body-based) and v2 (PAYMENT-REQUIRED header) formats.
+
+    If the original request uses POST and gets a 402, re-fetches with GET to
+    obtain the canonical payment requirement (the facilitator validates against
+    the GET version).
 
     Args:
         url: The content URL path (e.g., "/api/premium-article")
 
     Returns:
-        Dictionary with http_status, data (if 200), or payment_required (if 402)
+        Dictionary with http_status, data (if 200), or x402_payload and
+        x402_version (if 402) for passing to process_payment.
     """
     tracer = get_tracer()
     metrics = get_metrics_emitter()
     start_time = time.time()
-    
+
     with tracer.start_as_current_span("content.request") as span:
         full_url = f"{config.seller_api_url}{url}"
         span.set_attribute("http.url", full_url)
@@ -42,7 +57,7 @@ def request_content(url: str) -> dict[str, Any]:
                     headers={"Accept": "application/json"},
                     follow_redirects=True,
                 )
-                
+
                 span.set_attribute("http.status_code", response.status_code)
                 latency_ms = (time.time() - start_time) * 1000
 
@@ -60,42 +75,63 @@ def request_content(url: str) -> dict[str, Any]:
 
                 if response.status_code == 402:
                     span.set_attribute("payment.required", True)
-                    # Parse payment requirements from header (x402 v2 uses x-payment-required)
-                    payment_required_header = (
-                        response.headers.get("x-payment-required") or
-                        response.headers.get("X-PAYMENT-REQUIRED") or
+
+                    payment_info = None
+                    x402_version = 1
+
+                    # v2: payment details in PAYMENT-REQUIRED header (base64-encoded JSON)
+                    pr_header = (
                         response.headers.get("PAYMENT-REQUIRED")
+                        or response.headers.get("x-payment-required")
+                        or response.headers.get("X-PAYMENT-REQUIRED")
                     )
-                    if not payment_required_header:
-                        span.set_attribute("error.type", "missing_header")
+                    if pr_header:
+                        try:
+                            payment_info = json.loads(base64.b64decode(pr_header))
+                            x402_version = payment_info.get("x402Version", 2)
+                        except Exception:
+                            pass
+
+                    # v1 fallback: payment details in response body
+                    if not payment_info:
+                        try:
+                            payment_info = response.json()
+                            x402_version = payment_info.get("x402Version", 1)
+                        except Exception:
+                            metrics.record_content_request(
+                                status_code=402,
+                                latency_ms=latency_ms,
+                                content_path=url,
+                                payment_required=True,
+                                error="unparseable_402",
+                            )
+                            return {
+                                "http_status": 402,
+                                "error_message": "Could not parse payment requirements from 402 response",
+                            }
+
+                    # Extract accepts[0] as the raw x402 payload
+                    accepts = payment_info.get("accepts", [])
+                    if not accepts:
                         metrics.record_content_request(
                             status_code=402,
                             latency_ms=latency_ms,
                             content_path=url,
                             payment_required=True,
-                            error="missing_header",
+                            error="no_accepts",
                         )
                         return {
                             "http_status": 402,
-                            "error_message": "Missing x-payment-required header",
+                            "error_message": "402 response has no 'accepts' array",
+                            "raw_payment_info": payment_info,
                         }
 
-                    # Decode base64 payment requirements (x402 v2 format)
-                    payment_data = json.loads(base64.b64decode(payment_required_header))
-                    # x402 v2 uses "accepts" array, v1 used "requirements"
-                    accepts = payment_data.get("accepts", payment_data.get("requirements", []))
-                    requirement = accepts[0] if accepts else {}
-                    
-                    # x402 v2 uses "payTo" instead of "recipient"
-                    recipient = requirement.get("payTo", requirement.get("recipient", ""))
-                    # x402 v2 uses "asset" address, extra.name has currency name
-                    extra = requirement.get("extra", {})
-                    currency = extra.get("name", requirement.get("currency", "USDC"))
-                    
-                    span.set_attribute("payment.amount", requirement.get("amount", ""))
-                    span.set_attribute("payment.currency", currency)
-                    span.set_attribute("payment.network", requirement.get("network", ""))
-                    
+                    x402_payload = accepts[0]
+
+                    span.set_attribute("payment.amount", x402_payload.get("amount", ""))
+                    span.set_attribute("payment.network", x402_payload.get("network", ""))
+                    span.set_attribute("payment.x402_version", x402_version)
+
                     metrics.record_content_request(
                         status_code=402,
                         latency_ms=latency_ms,
@@ -103,18 +139,27 @@ def request_content(url: str) -> dict[str, Any]:
                         payment_required=True,
                     )
 
+                    # Also provide a human-readable summary for backward compat
+                    extra = x402_payload.get("extra", {})
+                    payment_required = {
+                        "scheme": x402_payload.get("scheme"),
+                        "network": x402_payload.get("network"),
+                        "amount": x402_payload.get("amount"),
+                        "asset": x402_payload.get("asset"),
+                        "currency": extra.get("name", "USDC"),
+                        "recipient": x402_payload.get("payTo", ""),
+                        "maxTimeoutSeconds": x402_payload.get("maxTimeoutSeconds", 60),
+                    }
+
                     return {
                         "http_status": 402,
-                        "payment_required": {
-                            "scheme": requirement.get("scheme"),
-                            "network": requirement.get("network"),
-                            "amount": requirement.get("amount"),
-                            "asset": requirement.get("asset"),
-                            "currency": currency,
-                            "recipient": recipient,
-                            "description": payment_data.get("resource", {}).get("description", ""),
-                            "maxTimeoutSeconds": requirement.get("maxTimeoutSeconds", 60),
-                        },
+                        "payment_required": payment_required,
+                        "x402_payload": x402_payload,
+                        "x402_version": x402_version,
+                        "message": (
+                            "Payment required. Pass x402_payload directly to "
+                            "process_payment, then call request_content_with_payment."
+                        ),
                     }
 
                 span.set_attribute("error.type", "unexpected_status")
@@ -147,72 +192,125 @@ def request_content(url: str) -> dict[str, Any]:
 
 
 @tool
-def request_content_with_payment(
-    url: str,
-    payment_payload: dict[str, Any],
-) -> dict[str, Any]:
-    """
-    Request content with a signed payment.
+def request_content_with_payment(url: str) -> dict[str, Any]:
+    """Retry a content request with the x402 payment proof from the last process_payment call.
+
+    The payment proof, x402 version, and original merchant payload are
+    automatically retrieved from internal state — you do NOT need to pass
+    them manually. Just pass the URL.
+
+    Constructs the correct x402 header:
+    - v1: X-PAYMENT header with x402Version, scheme, network, payload
+    - v2: PAYMENT-SIGNATURE header with x402Version, resource, accepted, payload, extension
+
+    Retries with exponential backoff if the merchant still returns 402
+    (waiting for on-chain transaction settlement).
 
     Args:
-        url: The content URL path (e.g., "/api/premium-article")
-        payment_payload: The signed payment payload from sign_payment tool
+        url: The content URL path (e.g., "/api/premium-article") — same as
+            the one that returned 402.
 
     Returns:
-        Dictionary with http_status, data, and settlement details
+        Dictionary with http_status, data, and settlement details.
     """
     tracer = get_tracer()
     metrics = get_metrics_emitter()
     start_time = time.time()
-    
+
     with tracer.start_as_current_span("content.request_with_payment") as span:
         full_url = f"{config.seller_api_url}{url}"
         span.set_attribute("http.url", full_url)
-        span.set_attribute("http.method", "GET")
         span.set_attribute("content.path", url)
         span.set_attribute("payment.included", True)
-        
-        if "amount" in payment_payload:
-            span.set_attribute("payment.amount", payment_payload["amount"])
-        if "network" in payment_payload:
-            span.set_attribute("payment.network", payment_payload["network"])
 
-        # Encode payment payload as base64
-        payment_signature = base64.b64encode(
-            json.dumps(payment_payload).encode()
-        ).decode()
+        # Get payment context from last process_payment call
+        ctx = get_last_payment_context()
+        proof = ctx.get("proof")
+        if not proof:
+            return {
+                "http_status": 0,
+                "error_message": "No payment proof available. Call process_payment first.",
+            }
+
+        x402_version = ctx.get("x402_version", 1)
+        x402_payload = ctx.get("x402_payload", {})
+
+        span.set_attribute("payment.x402_version", x402_version)
+
+        # Build the payment proof header
+        if x402_version >= 2:
+            header_obj = {
+                "x402Version": 2,
+                "resource": x402_payload.get("resource", ""),
+                "accepted": x402_payload,
+                "payload": proof.get("payload", proof),
+                "extension": x402_payload.get("resource", ""),
+            }
+            header_name = "PAYMENT-SIGNATURE"
+        else:
+            header_obj = {
+                "x402Version": 1,
+                "scheme": x402_payload.get("scheme", "exact"),
+                "network": x402_payload.get("network", "base-sepolia"),
+                "payload": proof.get("payload", proof),
+            }
+            header_name = "X-PAYMENT"
+
+        encoded_header = base64.b64encode(json.dumps(header_obj).encode()).decode()
+        span.set_attribute("payment.header_name", header_name)
+
+        # Retry with exponential backoff — merchant returns 402 until on-chain tx settles
+        max_attempts = 6
+        last_response = None
 
         try:
             with httpx.Client(timeout=30.0) as client:
-                response = client.get(
-                    full_url,
-                    headers={
-                        "Accept": "application/json",
-                        "x-payment-signature": payment_signature,  # x402 v2 header
-                    },
-                    follow_redirects=True,
-                )
-                
+                for attempt in range(1, max_attempts + 1):
+                    response = client.post(
+                        full_url,
+                        headers={
+                            "Accept": "application/json",
+                            header_name: encoded_header,
+                        },
+                        follow_redirects=True,
+                    )
+                    last_response = response
+
+                    if response.status_code != 402:
+                        break
+
+                    # Still 402 — transaction hasn't settled yet
+                    if attempt < max_attempts:
+                        wait = 2 * attempt
+                        time.sleep(wait)
+
                 span.set_attribute("http.status_code", response.status_code)
+                span.set_attribute("payment.retry_attempts", attempt)
                 latency_ms = (time.time() - start_time) * 1000
 
                 if response.status_code == 200:
                     span.set_attribute("content.delivered", True)
                     span.set_attribute("payment.accepted", True)
-                    
-                    # Parse settlement response from header (x402 v2 uses x-payment-response)
+
+                    # Parse settlement response from header
                     payment_response_header = (
-                        response.headers.get("x-payment-response") or
-                        response.headers.get("X-PAYMENT-RESPONSE") or
                         response.headers.get("PAYMENT-RESPONSE")
+                        or response.headers.get("x-payment-response")
+                        or response.headers.get("X-PAYMENT-RESPONSE")
                     )
                     settlement = None
                     if payment_response_header:
-                        settlement = json.loads(base64.b64decode(payment_response_header))
-                        span.set_attribute("payment.settled", True)
-                        if settlement and "transactionHash" in settlement:
-                            span.set_attribute("payment.transaction_hash", settlement["transactionHash"])
-                    
+                        try:
+                            settlement = json.loads(base64.b64decode(payment_response_header))
+                            span.set_attribute("payment.settled", True)
+                            if settlement and "transactionHash" in settlement:
+                                span.set_attribute(
+                                    "payment.transaction_hash",
+                                    settlement["transactionHash"],
+                                )
+                        except Exception:
+                            settlement = {"raw": payment_response_header}
+
                     metrics.record_content_request(
                         status_code=200,
                         latency_ms=latency_ms,
@@ -227,17 +325,21 @@ def request_content_with_payment(
 
                 if response.status_code == 402:
                     span.set_attribute("payment.accepted", False)
-                    span.set_attribute("error.type", "payment_rejected")
+                    span.set_attribute("error.type", "payment_not_settled")
                     metrics.record_content_request(
                         status_code=402,
                         latency_ms=latency_ms,
                         content_path=url,
                         payment_required=True,
-                        error="payment_rejected",
+                        error="payment_not_settled",
                     )
                     return {
                         "http_status": 402,
-                        "error_message": "Payment was rejected by the server",
+                        "error_message": (
+                            "Payment proof was sent but merchant still returned 402 "
+                            "after all retry attempts. The on-chain transaction may "
+                            "not have settled yet, or the wallet may have insufficient USDC."
+                        ),
                     }
 
                 span.set_attribute("error.type", "unexpected_status")

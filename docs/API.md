@@ -482,73 +482,43 @@ The response is streamed as chunks:
 
 The payer agent exposes the following tools:
 
-#### get_wallet_balance
+#### process_payment
 
-Check the current wallet balance.
-
-**Returns:**
-```json
-{
-  "success": true,
-  "address": "0x...",
-  "network": "base-sepolia",
-  "balance": "0.05",
-  "balance_wei": "50000000000000000",
-  "currency": "ETH"
-}
-```
-
----
-
-#### analyze_payment
-
-Analyze a payment request and decide whether to approve it.
+Execute an x402 payment via AgentCore Payments ProcessPayment API.
 
 **Parameters:**
 | Name | Type | Description |
 |------|------|-------------|
-| amount | string | Payment amount (e.g., "0.001") |
-| currency | string | Currency (e.g., "ETH", "USDC") |
-| recipient | string | Recipient wallet address |
-| description | string | Description of purchase |
-| wallet_balance | string | Current wallet balance |
+| x402_payload | object | Raw x402 payment requirement (accepts[0] from 402 response). Pass as-is. |
+| x402_version | integer | x402 protocol version (1 or 2). Defaults to 1. |
 
-**Returns:**
+**Returns (success):**
 ```json
 {
-  "should_pay": true,
-  "reasoning": "Payment of 0.001 USDC for 'premium article' is reasonable and within budget",
-  "risk_level": "low"
-}
-```
-
----
-
-#### sign_payment
-
-Sign a payment using the AgentKit wallet (EIP-3009).
-
-**Parameters:**
-| Name | Type | Description |
-|------|------|-------------|
-| scheme | string | Payment scheme (e.g., "exact") |
-| network | string | Blockchain network (e.g., "base-sepolia") |
-| amount | string | Payment amount |
-| recipient | string | Recipient wallet address |
-
-**Returns:**
-```json
-{
-  "success": true,
-  "payload": {
-    "scheme": "exact",
-    "network": "base-sepolia",
-    "signature": "0x...",
-    "from": "0x...",
-    "to": "0x...",
-    "amount": "1000",
-    "timestamp": 1737561600000
+  "status": "PROOF_GENERATED",
+  "paymentOutput": {
+    "cryptoX402": {
+      "payload": {
+        "signature": "0x...",
+        "authorization": {
+          "from": "0x...",
+          "to": "0x...",
+          "value": "1000",
+          "validAfter": "1700000000",
+          "validBefore": "1700000060",
+          "nonce": "0x..."
+        }
+      }
+    }
   }
+}
+```
+
+**Returns (error):**
+```json
+{
+  "status": "ERROR",
+  "error": "Budget exceeded"
 }
 ```
 
@@ -566,23 +536,25 @@ Request content from the seller API (may return 402).
 **Returns (200):**
 ```json
 {
-  "status": 200,
-  "content": { ... }
+  "http_status": 200,
+  "data": { ... }
 }
 ```
 
 **Returns (402):**
 ```json
 {
-  "status": 402,
+  "http_status": 402,
   "payment_required": {
     "scheme": "exact",
     "network": "eip155:84532",
     "amount": "1000",
     "currency": "USDC",
-    "recipient": "0x...",
-    "description": "Premium article content"
-  }
+    "recipient": "0x..."
+  },
+  "x402_payload": { ... },
+  "x402_version": 1,
+  "message": "Payment required. Pass x402_payload directly to process_payment."
 }
 ```
 
@@ -590,13 +562,12 @@ Request content from the seller API (may return 402).
 
 #### request_content_with_payment
 
-Request content with a signed payment.
+Retry a content request with the payment proof from the last process_payment call.
 
 **Parameters:**
 | Name | Type | Description |
 |------|------|-------------|
-| url | string | Content URL path |
-| payment_payload | object | Signed payment from sign_payment |
+| url | string | Content URL path (same as the one that returned 402) |
 
 **Returns:**
 ```json
@@ -608,47 +579,6 @@ Request content with a signed payment.
     "transaction": "0x...",
     "network": "eip155:84532"
   }
-}
-```
-
----
-
-#### request_faucet_funds
-
-Request test tokens from the testnet faucet.
-
-**Parameters:**
-| Name | Type | Default | Description |
-|------|------|---------|-------------|
-| asset_id | string | "eth" | Asset to request: "eth", "usdc", "eurc", "cbbtc" |
-
-**Returns:**
-```json
-{
-  "success": true,
-  "message": "Successfully requested ETH from faucet",
-  "transaction_hash": "0x...",
-  "address": "0x...",
-  "network": "base-sepolia",
-  "asset": "ETH"
-}
-```
-
----
-
-#### check_faucet_eligibility
-
-Check if the wallet is eligible for faucet funds.
-
-**Returns:**
-```json
-{
-  "success": true,
-  "eligible": true,
-  "address": "0x...",
-  "network": "base-sepolia",
-  "supported_assets": ["eth", "usdc", "eurc", "cbbtc"],
-  "message": "Wallet is eligible for faucet on base-sepolia..."
 }
 ```
 

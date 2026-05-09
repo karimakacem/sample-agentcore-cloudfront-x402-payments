@@ -14,23 +14,22 @@ class AgentConfig:
     # AgentCore Runtime configuration
     agent_runtime_arn: str = ""
     aws_region: str = "us-west-2"
-    
+
     # Bedrock model configuration (for local development)
     # Use cross-region inference profile for Claude Sonnet
     model_id: str = "us.anthropic.claude-3-5-sonnet-20241022-v2:0"
 
-    # CDP (Coinbase Developer Platform) configuration
-    cdp_api_key_name: str = ""
-    cdp_api_key_private_key: str = ""
-    cdp_wallet_secret: str = ""
-    cdp_wallet_address: str = ""  # Optional: pin to specific wallet address
-
-    # Network configuration
-    network_id: str = "base-sepolia"
+    # AgentCore Payments configuration
+    payment_manager_arn: str = ""        # Full ARN of the PaymentManager
+    payment_session_id: str = ""         # Pre-created by app backend
+    payment_instrument_id: str = ""      # Pre-created by app backend
+    process_payment_role_arn: str = ""   # IAM role ARN for ProcessPayment
+    user_id: str = ""                    # End-user identifier (required for all DP APIs)
+    dp_endpoint: str = ""               # Optional — boto3 auto-resolves from region
 
     # Seller API configuration
     seller_api_url: str = ""
-    
+
     # OpenTelemetry configuration
     otel_endpoint: str = ""
     otel_console_export: bool = False
@@ -42,11 +41,12 @@ class AgentConfig:
             agent_runtime_arn=os.getenv("AGENT_RUNTIME_ARN", ""),
             aws_region=os.getenv("AWS_REGION", cls.aws_region),
             model_id=os.getenv("BEDROCK_MODEL_ID", cls.model_id),
-            cdp_api_key_name=os.getenv("CDP_API_KEY_ID", ""),
-            cdp_api_key_private_key=os.getenv("CDP_API_KEY_SECRET", ""),
-            cdp_wallet_secret=os.getenv("CDP_WALLET_SECRET", ""),
-            cdp_wallet_address=os.getenv("CDP_WALLET_ADDRESS", ""),
-            network_id=os.getenv("NETWORK_ID", cls.network_id),
+            payment_manager_arn=os.getenv("MANAGER_ARN", ""),
+            payment_session_id=os.getenv("PAYMENT_SESSION_ID", ""),
+            payment_instrument_id=os.getenv("PAYMENT_INSTRUMENT_ID", ""),
+            process_payment_role_arn=os.getenv("PROCESS_PAYMENT_ROLE_ARN", ""),
+            user_id=os.getenv("USER_ID", ""),
+            dp_endpoint=os.getenv("DP_ENDPOINT", ""),
             seller_api_url=os.getenv("SELLER_API_URL", ""),
             otel_endpoint=os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", ""),
             otel_console_export=os.getenv("OTEL_CONSOLE_EXPORT", "").lower() == "true",

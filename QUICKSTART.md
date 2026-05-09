@@ -14,7 +14,8 @@ Get the x402 payment demo running in under 30 minutes.
 
 Also required:
 - AWS account with Bedrock AgentCore access
-- [Coinbase Developer Platform](https://portal.cdp.coinbase.com/) API keys
+- AgentCore Payments setup completed (see `agentcore-payments-beta/quickstart/`)
+- [Coinbase Developer Platform](https://portal.cdp.coinbase.com/) API keys (for AgentCore Payments credential provider setup)
 
 ## Full Deployment
 
@@ -23,10 +24,6 @@ Also required:
 ```bash
 git clone https://github.com/aws-samples/sample-agentcore-cloudfront-x402-payments
 cd sample-agentcore-cloudfront-x402-payments
-
-git clone https://github.com/coinbase/x402.git
-git clone https://github.com/coinbase/agentkit.git
-
 ./scripts/setup.sh
 ```
 
@@ -38,17 +35,6 @@ aws configure
 aws sts get-caller-identity
 ```
 
-**CDP (Coinbase):**
-
-Get API keys from [CDP Portal](https://portal.cdp.coinbase.com/), then edit `payer-agent/.env`:
-
-```bash
-CDP_API_KEY_ID=your_key_id
-CDP_API_KEY_SECRET=your_key_secret
-CDP_WALLET_SECRET=your_wallet_secret
-NETWORK_ID=base-sepolia
-```
-
 **Seller:**
 
 Edit `seller-infrastructure/.env` with your wallet address:
@@ -56,56 +42,84 @@ Edit `seller-infrastructure/.env` with your wallet address:
 PAYMENT_RECIPIENT_ADDRESS=<YOUR_SELLER_WALLET_ADDRESS>
 ```
 
-To create a seller wallet, you can:
-1. Use an existing Base Sepolia wallet address
-2. Create one via [CDP Portal](https://portal.cdp.coinbase.com/) 
-3. Use MetaMask or another wallet on Base Sepolia testnet
-
 ### Step 3: Deploy Seller (10 min)
 
 ```bash
-cd sample-agentcore-cloudfront-x402-payments/seller-infrastructure
+cd seller-infrastructure
 npm install
 npx cdk bootstrap  # first time only
 npx cdk deploy
 ```
 
-### Step 4: Sync Environment Variables
+### Step 4: Set Up AgentCore Payments (10 min)
 
-This automatically pulls the CloudFront URL from the seller stack and updates `payer-agent/.env` and `web-ui/.env.local`:
+This creates the payment infrastructure (credential provider, manager, connector):
 
 ```bash
-cd sample-agentcore-cloudfront-x402-payments
-./scripts/sync-env.sh
+cd agentcore-payments-beta/quickstart
+cp .env.sample .env
+# Fill in: COINBASE_API_KEY_ID, COINBASE_API_KEY_SECRET, COINBASE_WALLET_SECRET
+
+bash setup_roles.sh       # Creates 4 IAM roles
+bash setup_model.sh       # Installs boto3 service models (needed until GA)
+bash setup_manager.sh     # Creates credential provider, manager, connector
 ```
 
-### Step 5: Deploy Payer (10 min)
+Save the output values — you'll need `MANAGER_ARN` and `CONNECTOR_ID`.
+
+Then create an instrument and session:
 
 ```bash
-cd sample-agentcore-cloudfront-x402-payments/payer-infrastructure
+cd ../scripts
+cp .env.sample .env
+# Fill in: MANAGER_ARN, CONNECTOR_ID, role ARNs from setup_roles.sh output
+bash e2e-test.sh
+```
+
+Save `PAYMENT_INSTRUMENT_ID` and `PAYMENT_SESSION_ID` from the output.
+
+Fund the wallet with testnet USDC at https://faucet.circle.com/ (Base Sepolia).
+
+### Step 5: Configure Payer Agent
+
+```bash
+cd payer-agent
+cp .env.example .env
+```
+
+Fill in the `.env` file:
+```bash
+MANAGER_ARN=<from step 4>
+PAYMENT_SESSION_ID=<from step 4>
+PAYMENT_INSTRUMENT_ID=<from step 4>
+PROCESS_PAYMENT_ROLE_ARN=<from setup_roles.sh output>
+USER_ID=test-user-12345
+SELLER_API_URL=<CloudFront URL from step 3>
+```
+
+### Step 6: Deploy Payer Infrastructure (10 min)
+
+```bash
+cd payer-infrastructure
 npm install
 npx cdk bootstrap  # first time only
 npx cdk deploy --all
 ```
 
-### Step 6: Deploy Agent
-
-The deploy script automatically writes `AGENT_RUNTIME_ARN` back to `payer-agent/.env`.
+### Step 7: Deploy Agent
 
 ```bash
-cd sample-agentcore-cloudfront-x402-payments/payer-agent
-python -m venv .venv
+cd payer-agent
+python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 python scripts/deploy_to_agentcore.py
 ```
 
-> **Important**: Without `AGENT_RUNTIME_ARN`, web-ui-infrastructure has no runtime to proxy to.
-
-### Step 7: Test
+### Step 8: Test
 
 ```bash
-cd sample-agentcore-cloudfront-x402-payments/payer-agent
+cd payer-agent
 source .venv/bin/activate
 
 # Test MCP tool discovery
@@ -118,17 +132,17 @@ python scripts/invoke_gateway.py "Get me the premium article"
 pytest tests/ -v
 ```
 
-### Step 8: Web UI (Optional)
+### Step 9: Web UI (Optional)
 
 Start the backend API server and frontend in separate terminals:
 ```bash
 # Terminal 1: Backend
-cd sample-agentcore-cloudfront-x402-payments/payer-agent
+cd payer-agent
 source .venv/bin/activate
 python -m agent.api_server
 
 # Terminal 2: Frontend
-cd sample-agentcore-cloudfront-x402-payments/web-ui
+cd web-ui
 npm install
 npm run dev
 ```
@@ -161,18 +175,17 @@ aws configure
 npx cdk bootstrap aws://ACCOUNT_ID/REGION
 ```
 
-**No wallet balance:**
-```bash
-python -c "from agent.tools.payment import request_faucet_funds; print(request_faucet_funds())"
-```
+**ProcessPayment fails with "Budget exceeded":**
+Create a new session with a higher `maxSpendAmount` using the management role.
+
+**ProcessPayment fails with "Insufficient funds":**
+Fund the wallet with USDC at https://faucet.circle.com/ (select Base Sepolia network).
 
 **Lambda@Edge region:**
 Lambda@Edge requires `us-east-1`. This is hardcoded in the CDK stack — no configuration needed.
 
-See [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md) for more.
-
 ## References
 
 - [README.md](README.md) - Full architecture
-- [docs/API.md](docs/API.md) - API reference
+- [agentcore-payments-beta/docs/getting-started.md](agentcore-payments-beta/docs/getting-started.md) - AgentCore Payments guide
 - [x402 Protocol](https://github.com/coinbase/x402/tree/main/specs)
