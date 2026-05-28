@@ -45,7 +45,7 @@ def request_content(url: str) -> dict[str, Any]:
     start_time = time.time()
 
     with tracer.start_as_current_span("content.request") as span:
-        full_url = f"{config.seller_api_url}{url}"
+        full_url = url if url.startswith("http") else f"{config.seller_api_url}{url}"
         span.set_attribute("http.url", full_url)
         span.set_attribute("http.method", "GET")
         span.set_attribute("content.path", url)
@@ -218,7 +218,7 @@ def request_content_with_payment(url: str) -> dict[str, Any]:
     start_time = time.time()
 
     with tracer.start_as_current_span("content.request_with_payment") as span:
-        full_url = f"{config.seller_api_url}{url}"
+        full_url = url if url.startswith("http") else f"{config.seller_api_url}{url}"
         span.set_attribute("http.url", full_url)
         span.set_attribute("content.path", url)
         span.set_attribute("payment.included", True)
