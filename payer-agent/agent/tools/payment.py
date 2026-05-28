@@ -172,8 +172,8 @@ def get_wallet_balance() -> dict:
             paymentConnectorId=config.payment_connector_id,
             paymentInstrumentId=config.payment_instrument_id,
             userId=config.user_id,
-            chain="eip155:84532",
-            token="0x036CbD53842c5426634e7929541eC2318f3dCF7e",
+            chain="BASE_SEPOLIA",
+            token="USDC",
         )
         instrument = response.get("paymentInstrumentBalance", {})
         crypto = instrument.get("cryptoWallet", {})
