@@ -161,3 +161,30 @@ def process_payment(x402_payload: dict, x402_version: int = 1) -> dict[str, Any]
                 "status": "ERROR",
                 "error": str(e),
             }
+
+
+def get_wallet_balance() -> dict:
+    """Return wallet balance for the configured payment instrument."""
+    try:
+        dp_client = _get_dp_client()
+        response = dp_client.get_payment_instrument_balance(
+            paymentManagerArn=config.payment_manager_arn,
+            paymentInstrumentId=config.payment_instrument_id,
+            userId=config.user_id,
+        )
+        instrument = response.get("paymentInstrumentBalance", {})
+        crypto = instrument.get("cryptoWallet", {})
+        balances = crypto.get("balances", [])
+        usdc_balance = "0"
+        for b in balances:
+            if b.get("currency", "").upper() == "USDC":
+                usdc_balance = b.get("amount", "0")
+                break
+        return {
+            "success": True,
+            "address": crypto.get("address", ""),
+            "usdc_balance": usdc_balance,
+            "network": crypto.get("network", "base-sepolia"),
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
