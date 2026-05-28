@@ -169,13 +169,20 @@ def get_env_vars() -> dict:
     # Only include specific variables needed by the agent
     allowed_vars = [
         "AWS_REGION",
+        "BEDROCK_MODEL_ID",
+        "SELLER_API_URL",  # Required for content tools to reach CloudFront
+        # AgentCore Payments
+        "MANAGER_ARN",
+        "PAYMENT_SESSION_ID",
+        "PAYMENT_INSTRUMENT_ID",
+        "PROCESS_PAYMENT_ROLE_ARN",
+        "USER_ID",
+        # Legacy CDP direct credentials (not needed with AgentCore Payments)
         "CDP_API_KEY_ID",
         "CDP_API_KEY_SECRET",
         "CDP_WALLET_SECRET",
         "CDP_WALLET_ADDRESS",
         "NETWORK_ID",
-        "BEDROCK_MODEL_ID",
-        "SELLER_API_URL",  # Required for content tools to reach CloudFront
     ]
     
     return {k: v for k, v in env.items() if k in allowed_vars and v}

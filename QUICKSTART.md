@@ -65,6 +65,7 @@ Then create the AgentCore Payments resources using boto3 (AgentCore Payments is 
 
 ```python
 import boto3
+import uuid
 
 cp_client = boto3.client("bedrock-agentcore-control", region_name="us-west-2")
 dp_client = boto3.client("bedrock-agentcore", region_name="us-west-2")
@@ -110,8 +111,9 @@ instrument = dp_client.create_payment_instrument(
 session = dp_client.create_payment_session(
     paymentManagerArn=manager["paymentManagerArn"],
     userId="test-user-12345",
-    expiryDuration=480,
+    expiryTimeInMinutes=480,
     limits={"maxSpendAmount": {"value": "1.0", "currency": "USD"}},
+    clientToken=str(uuid.uuid4()),
 )
 
 print("MANAGER_ARN =", manager["paymentManagerArn"])

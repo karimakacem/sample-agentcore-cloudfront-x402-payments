@@ -2,12 +2,14 @@
 """Interactive chat with the deployed AgentCore agent."""
 
 import argparse
-import os
-import boto3
 import json
+import os
+import sys
+import boto3
 
-# Default runtime ARN - can be overridden via --runtime-arn or AGENT_RUNTIME_ARN env var
-DEFAULT_RUNTIME_ARN = "arn:aws:bedrock-agentcore:us-west-2:633890776779:runtime/x402PayerAgent-ZRET5yCgTk"
+# Default runtime ARN - set AGENT_RUNTIME_ARN in .env after running deploy_to_agentcore.py
+# The deploy script writes the new ARN to .env automatically under AGENT_RUNTIME_ARN.
+DEFAULT_RUNTIME_ARN = os.environ.get("AGENT_RUNTIME_ARN", "")
 
 def chat(runtime_arn: str):
     client = boto3.client('bedrock-agentcore', region_name='us-west-2')
@@ -47,8 +49,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Interactive chat with x402 Payer Agent")
     parser.add_argument(
         "--runtime-arn",
-        default=os.environ.get("AGENT_RUNTIME_ARN", DEFAULT_RUNTIME_ARN),
-        help="AgentCore Runtime ARN (default: from AGENT_RUNTIME_ARN env var or built-in default)"
+        default=DEFAULT_RUNTIME_ARN,
+        help="AgentCore Runtime ARN (default: AGENT_RUNTIME_ARN env var, set by deploy_to_agentcore.py)"
     )
     args = parser.parse_args()
+    if not args.runtime_arn:
+        print("Error: AGENT_RUNTIME_ARN not set. Run deploy_to_agentcore.py first, or pass --runtime-arn.")
+        sys.exit(1)
     chat(args.runtime_arn)
