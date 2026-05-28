@@ -169,8 +169,11 @@ def get_wallet_balance() -> dict:
         dp_client = _get_dp_client()
         response = dp_client.get_payment_instrument_balance(
             paymentManagerArn=config.payment_manager_arn,
+            paymentConnectorId=config.payment_connector_id,
             paymentInstrumentId=config.payment_instrument_id,
             userId=config.user_id,
+            chain="eip155:84532",
+            token="0x036CbD53842c5426634e7929541eC2318f3dCF7e",
         )
         instrument = response.get("paymentInstrumentBalance", {})
         crypto = instrument.get("cryptoWallet", {})
