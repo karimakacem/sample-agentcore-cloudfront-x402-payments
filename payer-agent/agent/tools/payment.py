@@ -167,7 +167,7 @@ def get_wallet_balance() -> dict:
     """Return wallet balance for the configured payment instrument."""
     try:
         dp_client = _get_dp_client()
-        response = dp_client.get_payment_instrument_balance(
+        balance_response = dp_client.get_payment_instrument_balance(
             paymentManagerArn=config.payment_manager_arn,
             paymentConnectorId=config.payment_connector_id,
             paymentInstrumentId=config.payment_instrument_id,
@@ -175,19 +175,32 @@ def get_wallet_balance() -> dict:
             chain="BASE_SEPOLIA",
             token="USDC",
         )
-        instrument = response.get("paymentInstrumentBalance", {})
-        crypto = instrument.get("cryptoWallet", {})
-        balances = crypto.get("balances", [])
-        usdc_balance = "0"
-        for b in balances:
-            if b.get("currency", "").upper() == "USDC":
-                usdc_balance = b.get("amount", "0")
-                break
+        token_balance = balance_response.get("tokenBalance", {})
+        raw_amount = token_balance.get("amount", "0")
+        decimals = token_balance.get("decimals", 6)
+        balance = int(raw_amount) / (10 ** decimals)
+
+        # Fetch wallet address from instrument details
+        instrument_response = dp_client.get_payment_instrument(
+            paymentManagerArn=config.payment_manager_arn,
+            paymentInstrumentId=config.payment_instrument_id,
+            userId=config.user_id,
+        )
+        details = (
+            instrument_response.get("paymentInstrument", {})
+            .get("paymentInstrumentDetails", {})
+        )
+        address = (
+            details.get("embeddedCryptoWallet", {}).get("walletAddress", "")
+            or details.get("cryptoWallet", {}).get("address", "")
+            or config.payment_instrument_id
+        )
+
         return {
             "success": True,
-            "address": crypto.get("address", ""),
-            "usdc_balance": usdc_balance,
-            "network": crypto.get("network", "base-sepolia"),
+            "address": address,
+            "usdc_balance": str(balance),
+            "network": token_balance.get("chain", "BASE_SEPOLIA").lower().replace("_", "-"),
         }
     except Exception as e:
         return {"success": False, "error": str(e)}
