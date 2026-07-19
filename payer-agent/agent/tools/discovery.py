@@ -23,7 +23,6 @@ from strands import tool
 from ..config import config
 from ..tracing import get_tracer
 from ..metrics import get_metrics_emitter
-from .payment import get_last_payment_context
 
 
 @tool
@@ -45,12 +44,50 @@ def discover_services() -> dict[str, Any]:
     start_time = time.time()
 
     with tracer.start_as_current_span("discovery.discover_services") as span:
-        gateway_url = config.seller_api_url
-        discovery_url = f"{gateway_url}/mcp/tools"
-        span.set_attribute("discovery.url", discovery_url)
+        seller_url = config.seller_api_url
+        catalog_url = f"{seller_url}/api/catalog"
+        span.set_attribute("discovery.catalog_url", catalog_url)
 
         try:
             with httpx.Client(timeout=30.0) as client:
+                # Primary: seller catalog endpoint (free, no payment required)
+                try:
+                    catalog_response = client.get(
+                        catalog_url,
+                        headers={"Accept": "application/json"},
+                    )
+                    if catalog_response.status_code == 200:
+                        data = catalog_response.json()
+                        endpoints = data.get("endpoints", [])
+                        services = [
+                            {
+                                "name": ep["path"].lstrip("/").replace("/", "_").replace("-", "_"),
+                                "description": ep.get("description", ""),
+                                "requires_payment": True,
+                                "price": {
+                                    "amount": ep.get("price", ""),
+                                    "currency": ep.get("currency", "USDC"),
+                                },
+                                "endpoint": ep["path"],
+                            }
+                            for ep in endpoints
+                        ]
+                        span.set_attribute("discovery.source", "catalog")
+                        span.set_attribute("discovery.services_found", len(services))
+                        return {
+                            "http_status": 200,
+                            "services": services,
+                            "total_count": len(services),
+                            "source": "catalog",
+                            "message": f"Found {len(services)} available services",
+                        }
+                except httpx.RequestError:
+                    pass
+
+                # Fallback: MCP gateway
+                discovery_url = f"{seller_url}/mcp/tools"
+                span.set_attribute("discovery.fallback_url", discovery_url)
+
                 response = client.get(
                     discovery_url,
                     headers={"Accept": "application/json"},
@@ -71,12 +108,10 @@ def discover_services() -> dict[str, Any]:
                 data = response.json()
                 tools_data = data.get("tools", [])
 
-                # Parse services into a user-friendly format
                 services = []
                 for tool_data in tools_data:
                     mcp_metadata = tool_data.get("mcp_metadata", {})
                     x402_metadata = tool_data.get("x402_metadata", {})
-
                     service = {
                         "name": tool_data.get("tool_name", tool_data.get("name", "")),
                         "description": tool_data.get("tool_description", tool_data.get("description", "")),
@@ -93,13 +128,13 @@ def discover_services() -> dict[str, Any]:
                     }
                     services.append(service)
 
+                span.set_attribute("discovery.source", "mcp_gateway")
                 span.set_attribute("discovery.services_found", len(services))
-
                 return {
                     "http_status": 200,
                     "services": services,
                     "total_count": len(services),
-                    "gateway_url": gateway_url,
+                    "source": "mcp_gateway",
                     "message": f"Found {len(services)} available services",
                 }
 
@@ -155,61 +190,13 @@ def request_service(
         full_url = f"{gateway_url}{endpoint_path}"
         span.set_attribute("http.url", full_url)
 
-        # Check if we have a payment proof from a prior process_payment call
-        ctx = get_last_payment_context()
-        proof = ctx.get("proof")
-        has_proof = proof is not None
-
-        span.set_attribute("service.has_payment_proof", has_proof)
-
-        # Build headers
-        headers = {"Accept": "application/json"}
-        method = "GET"
-
-        if has_proof:
-            # Construct the x402 payment header from stored proof
-            x402_version = ctx.get("x402_version", 1)
-            x402_payload = ctx.get("x402_payload", {})
-
-            if x402_version >= 2:
-                header_obj = {
-                    "x402Version": 2,
-                    "resource": x402_payload.get("resource", ""),
-                    "accepted": x402_payload,
-                    "payload": proof.get("payload", proof),
-                    "extension": x402_payload.get("resource", ""),
-                }
-                header_name = "PAYMENT-SIGNATURE"
-            else:
-                header_obj = {
-                    "x402Version": 1,
-                    "scheme": x402_payload.get("scheme", "exact"),
-                    "network": x402_payload.get("network", "base-sepolia"),
-                    "payload": proof.get("payload", proof),
-                }
-                header_name = "X-PAYMENT"
-
-            encoded = base64.b64encode(json.dumps(header_obj).encode()).decode()
-            headers[header_name] = encoded
-            method = "POST"  # Paid requests use POST
-
         try:
             with httpx.Client(timeout=30.0) as client:
-                if has_proof:
-                    # Retry with backoff for payment settlement
-                    max_attempts = 6
-                    for attempt in range(1, max_attempts + 1):
-                        response = client.request(
-                            method, full_url, headers=headers, follow_redirects=True
-                        )
-                        if response.status_code != 402:
-                            break
-                        if attempt < max_attempts:
-                            time.sleep(2 * attempt)
-                else:
-                    response = client.get(
-                        full_url, headers=headers, follow_redirects=True
-                    )
+                response = client.get(
+                    full_url,
+                    headers={"Accept": "application/json"},
+                    follow_redirects=True,
+                )
 
                 latency_ms = (time.time() - start_time) * 1000
                 span.set_attribute("http.status_code", response.status_code)
@@ -267,39 +254,6 @@ def request_service(
 
                     accepts = payment_info.get("accepts", []) if payment_info else []
                     x402_payload = accepts[0] if accepts else {}
-
-                    # Re-fetch with GET to get canonical payment requirement
-                    # (facilitator validates against GET version)
-                    if method == "POST" and x402_payload:
-                        try:
-                            get_resp = client.get(
-                                full_url,
-                                headers={"Accept": "application/json"},
-                                follow_redirects=True,
-                            )
-                            if get_resp.status_code == 402:
-                                get_info = None
-                                get_pr = (
-                                    get_resp.headers.get("PAYMENT-REQUIRED")
-                                    or get_resp.headers.get("x-payment-required")
-                                    or get_resp.headers.get("X-PAYMENT-REQUIRED")
-                                )
-                                if get_pr:
-                                    try:
-                                        get_info = json.loads(base64.b64decode(get_pr))
-                                    except Exception:
-                                        pass
-                                if not get_info:
-                                    try:
-                                        get_info = get_resp.json()
-                                    except Exception:
-                                        pass
-                                if get_info:
-                                    get_accepts = get_info.get("accepts", [])
-                                    if get_accepts:
-                                        x402_payload = get_accepts[0]
-                        except Exception:
-                            pass
 
                     extra = x402_payload.get("extra", {})
 

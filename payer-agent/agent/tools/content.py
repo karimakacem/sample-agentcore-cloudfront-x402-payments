@@ -45,7 +45,7 @@ def request_content(url: str) -> dict[str, Any]:
     start_time = time.time()
 
     with tracer.start_as_current_span("content.request") as span:
-        full_url = f"{config.seller_api_url}{url}"
+        full_url = url if url.startswith("http") else f"{config.seller_api_url}{url}"
         span.set_attribute("http.url", full_url)
         span.set_attribute("http.method", "GET")
         span.set_attribute("content.path", url)
@@ -218,7 +218,7 @@ def request_content_with_payment(url: str) -> dict[str, Any]:
     start_time = time.time()
 
     with tracer.start_as_current_span("content.request_with_payment") as span:
-        full_url = f"{config.seller_api_url}{url}"
+        full_url = url if url.startswith("http") else f"{config.seller_api_url}{url}"
         span.set_attribute("http.url", full_url)
         span.set_attribute("content.path", url)
         span.set_attribute("payment.included", True)
@@ -241,10 +241,10 @@ def request_content_with_payment(url: str) -> dict[str, Any]:
         if x402_version >= 2:
             header_obj = {
                 "x402Version": 2,
-                "resource": x402_payload.get("resource", ""),
+                "resource": {"url": full_url},
                 "accepted": x402_payload,
                 "payload": proof.get("payload", proof),
-                "extension": x402_payload.get("resource", ""),
+                "extension": {},
             }
             header_name = "PAYMENT-SIGNATURE"
         else:
@@ -265,8 +265,9 @@ def request_content_with_payment(url: str) -> dict[str, Any]:
 
         try:
             with httpx.Client(timeout=30.0) as client:
+                time.sleep(2)  # Initial delay for on-chain settlement
                 for attempt in range(1, max_attempts + 1):
-                    response = client.post(
+                    response = client.get(
                         full_url,
                         headers={
                             "Accept": "application/json",
@@ -276,7 +277,7 @@ def request_content_with_payment(url: str) -> dict[str, Any]:
                     )
                     last_response = response
 
-                    if response.status_code != 402:
+                    if response.status_code not in (402, 500):
                         break
 
                     # Still 402 — transaction hasn't settled yet

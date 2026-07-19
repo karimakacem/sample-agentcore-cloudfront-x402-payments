@@ -70,26 +70,31 @@ with a pre-set session budget and CANNOT create sessions, instruments, or overri
 
 When an endpoint returns HTTP 402 (Payment Required):
 
-1. **Detect 402**: Call request_content(url) or request_service(name).
+1. **Detect 402**: Call request_content(url) with the endpoint path (e.g., /api/research-report).
+   ALWAYS use request_content for the initial 402 — it ensures the payment proof matches the retry URL.
    The response includes x402_payload and x402_version.
 
 2. **Pay**: Call process_payment(x402_payload=<the x402_payload>, x402_version=<version>).
    Pass x402_payload AS-IS — do not reconstruct or cherry-pick fields.
    Wait for status: "PROOF_GENERATED".
 
-3. **Retry**: Call request_content_with_payment(url) or request_service(name) again.
-   The payment proof is automatically attached. Includes retry with backoff
-   for on-chain settlement.
+3. **Retry**: Call request_content_with_payment(url) with the SAME url from Step 1.
+   This is the ONLY tool that sends the payment proof. NEVER use request_service for retrieval after payment.
 
 That's it — three tool calls.
 
 ## Important Rules
 
+- ALWAYS use request_content (not request_service) for the initial 402 request. This ensures
+  the payment proof matches the exact WAF challenge. Use discover_services only for finding
+  available services — not for fetching content.
 - ALWAYS pass x402_payload from the 402 response directly to process_payment.
   The API accepts the raw merchant payload. Do NOT parse individual fields.
 - The x402_version from the 402 response tells process_payment how to handle the payload.
 - After process_payment succeeds, the proof is stored internally — just call the
   retry tool with the URL.
+- After process_payment succeeds, ALWAYS use request_content_with_payment for the next step.
+  NEVER call request_service after payment — it does not send payment proof and will waste the proof's validity window.
 - Session budget (maxSpendAmount) is enforced server-side. If you exceed the budget,
   ProcessPayment will reject the request.
 - For pre-approved services, proceed automatically. For others, ask the user first.
@@ -106,9 +111,9 @@ User: "Get me the premium article"
 → request_content_with_payment("/api/premium-article") → 200 with content
 
 User: "I want the research report"
-→ request_service("get_research_report") → gets 402
+→ request_content("/api/research-report") → gets 402
 → Check approval, ask user if not pre-approved
-→ process_payment(...) → request_service("get_research_report") again → content
+→ process_payment(...) → request_content_with_payment("/api/research-report") → content
 
 ## Transparency Requirements
 Always be transparent about:
@@ -271,16 +276,21 @@ if __name__ == "__main__":
         print(f"Payment Manager: {config.payment_manager_arn}")
         print(f"Session: {config.payment_session_id}")
 
+        import httpx as _httpx
+        catalog_url = f"{config.seller_api_url}/api/catalog"
         try:
-            mcp_tools = await discover_mcp_tools()
-            print(f"Discovered {len(mcp_tools)} MCP tools")
-            for t in mcp_tools:
-                print(f"  - {t.__name__}")
-            agent = create_payer_agent(additional_tools=mcp_tools)
-        except Exception as e:
-            print(f"MCP discovery failed: {e}")
+            with _httpx.Client(timeout=10.0) as _client:
+                _resp = _client.get(catalog_url, headers={"Accept": "application/json"})
+            if _resp.status_code == 200:
+                _endpoints = _resp.json().get("endpoints", [])
+                print(f"Catalog: {len(_endpoints)} services available")
+                for ep in _endpoints:
+                    print(f"  {ep['path']}  {ep.get('price', '?')} {ep.get('currency', 'USDC')}")
+            else:
+                print("Running with core tools only.")
+        except Exception:
             print("Running with core tools only.")
-            agent = create_payer_agent()
+        agent = create_payer_agent()
 
         print("-" * 50)
         print("Type 'quit' to exit.")

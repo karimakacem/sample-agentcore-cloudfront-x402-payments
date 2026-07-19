@@ -21,6 +21,7 @@ class AgentConfig:
 
     # AgentCore Payments configuration
     payment_manager_arn: str = ""        # Full ARN of the PaymentManager
+    payment_connector_id: str = ""       # Connector ID (from create_payment_connector)
     payment_session_id: str = ""         # Pre-created by app backend
     payment_instrument_id: str = ""      # Pre-created by app backend
     process_payment_role_arn: str = ""   # IAM role ARN for ProcessPayment
@@ -42,6 +43,7 @@ class AgentConfig:
             aws_region=os.getenv("AWS_REGION", cls.aws_region),
             model_id=os.getenv("BEDROCK_MODEL_ID", cls.model_id),
             payment_manager_arn=os.getenv("MANAGER_ARN", ""),
+            payment_connector_id=os.getenv("PAYMENT_CONNECTOR_ID", ""),
             payment_session_id=os.getenv("PAYMENT_SESSION_ID", ""),
             payment_instrument_id=os.getenv("PAYMENT_INSTRUMENT_ID", ""),
             process_payment_role_arn=os.getenv("PROCESS_PAYMENT_ROLE_ARN", ""),

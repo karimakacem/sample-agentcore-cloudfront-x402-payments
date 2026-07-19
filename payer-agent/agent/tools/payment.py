@@ -161,3 +161,46 @@ def process_payment(x402_payload: dict, x402_version: int = 1) -> dict[str, Any]
                 "status": "ERROR",
                 "error": str(e),
             }
+
+
+def get_wallet_balance() -> dict:
+    """Return wallet balance for the configured payment instrument."""
+    try:
+        dp_client = _get_dp_client()
+        balance_response = dp_client.get_payment_instrument_balance(
+            paymentManagerArn=config.payment_manager_arn,
+            paymentConnectorId=config.payment_connector_id,
+            paymentInstrumentId=config.payment_instrument_id,
+            userId=config.user_id,
+            chain="BASE_SEPOLIA",
+            token="USDC",
+        )
+        token_balance = balance_response.get("tokenBalance", {})
+        raw_amount = token_balance.get("amount", "0")
+        decimals = token_balance.get("decimals", 6)
+        balance = int(raw_amount) / (10 ** decimals)
+
+        # Fetch wallet address from instrument details
+        instrument_response = dp_client.get_payment_instrument(
+            paymentManagerArn=config.payment_manager_arn,
+            paymentInstrumentId=config.payment_instrument_id,
+            userId=config.user_id,
+        )
+        details = (
+            instrument_response.get("paymentInstrument", {})
+            .get("paymentInstrumentDetails", {})
+        )
+        address = (
+            details.get("embeddedCryptoWallet", {}).get("walletAddress", "")
+            or details.get("cryptoWallet", {}).get("address", "")
+            or config.payment_instrument_id
+        )
+
+        return {
+            "success": True,
+            "address": address,
+            "usdc_balance": str(balance),
+            "network": token_balance.get("chain", "BASE_SEPOLIA").lower().replace("_", "-"),
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}

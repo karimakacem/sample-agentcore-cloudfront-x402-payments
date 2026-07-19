@@ -41,7 +41,7 @@ const AVAILABLE_CONTENT: ContentItem[] = [
     path: '/api/weather-data',
     title: 'Weather Data',
     description: 'Current weather conditions and forecast',
-    price: '0.0005',
+    price: '0.001',
     currency: 'USDC',
   },
   {
