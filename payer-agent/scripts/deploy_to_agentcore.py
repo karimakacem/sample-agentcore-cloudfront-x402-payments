@@ -169,13 +169,20 @@ def get_env_vars() -> dict:
     # Only include specific variables needed by the agent
     allowed_vars = [
         "AWS_REGION",
+        "BEDROCK_MODEL_ID",
+        "SELLER_API_URL",  # Required for content tools to reach CloudFront
+        # AgentCore Payments
+        "MANAGER_ARN",
+        "PAYMENT_SESSION_ID",
+        "PAYMENT_INSTRUMENT_ID",
+        "PROCESS_PAYMENT_ROLE_ARN",
+        "USER_ID",
+        # Legacy CDP direct credentials (not needed with AgentCore Payments)
         "CDP_API_KEY_ID",
         "CDP_API_KEY_SECRET",
         "CDP_WALLET_SECRET",
         "CDP_WALLET_ADDRESS",
         "NETWORK_ID",
-        "BEDROCK_MODEL_ID",
-        "SELLER_API_URL",  # Required for content tools to reach CloudFront
     ]
     
     return {k: v for k, v in env.items() if k in allowed_vars and v}
@@ -233,20 +240,22 @@ def wait_for_runtime(runtime_id: str, timeout: int = 600) -> bool:
 def test_invocation(runtime_arn: str) -> bool:
     """Test invoking the runtime."""
     client = boto3.client("bedrock-agentcore", region_name=REGION)
-    
+
     print("Testing invocation...")
     try:
         response = client.invoke_agent_runtime(
             agentRuntimeArn=runtime_arn,
+            contentType="application/json",
+            accept="application/json",
             payload=json.dumps({"message": "What is your wallet balance?"}).encode("utf-8"),
         )
-        
+
         # Read streaming response
         result = b""
         for event in response.get("responseStream", []):
             if "chunk" in event:
                 result += event["chunk"]["bytes"]
-        
+
         print(f"  Response: {result.decode()[:200]}...")
         return True
     except Exception as e:

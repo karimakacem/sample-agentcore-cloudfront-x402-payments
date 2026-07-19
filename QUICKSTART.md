@@ -65,6 +65,7 @@ Then create the AgentCore Payments resources using boto3 (AgentCore Payments is 
 
 ```python
 import boto3
+import uuid
 
 cp_client = boto3.client("bedrock-agentcore-control", region_name="us-west-2")
 dp_client = boto3.client("bedrock-agentcore", region_name="us-west-2")
@@ -110,8 +111,9 @@ instrument = dp_client.create_payment_instrument(
 session = dp_client.create_payment_session(
     paymentManagerArn=manager["paymentManagerArn"],
     userId="test-user-12345",
-    expiryDuration=480,
+    expiryTimeInMinutes=480,
     limits={"maxSpendAmount": {"value": "1.0", "currency": "USD"}},
+    clientToken=str(uuid.uuid4()),
 )
 
 print("MANAGER_ARN =", manager["paymentManagerArn"])
@@ -213,8 +215,8 @@ Create a new session with a higher `maxSpendAmount` using the management role.
 **ProcessPayment fails with "Insufficient funds":**
 Fund the wallet with USDC at https://faucet.circle.com/ (select Base Sepolia network).
 
-**Lambda@Edge region:**
-Lambda@Edge requires `us-east-1`. This is hardcoded in the CDK stack — no configuration needed.
+**WAF for CloudFront region:**
+AWS WAF rules for CloudFront must be deployed to `us-east-1`. This is hardcoded in the CDK stack — no configuration needed.
 
 ## References
 

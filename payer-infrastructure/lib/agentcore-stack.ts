@@ -115,12 +115,36 @@ export class AgentCoreStack extends cdk.Stack {
     // It can ONLY call ProcessPayment — no session/instrument creation.
     const processPaymentRole = new iam.Role(this, 'ProcessPaymentRole', {
       roleName: 'AgentCorePaymentsProcessPaymentRole',
-      assumedBy: new iam.AccountRootPrincipal(),
+      assumedBy: new iam.CompositePrincipal(
+        new iam.AccountRootPrincipal(),
+        new iam.ServicePrincipal('bedrock-agentcore.amazonaws.com'),
+      ),
       description: 'IAM role for the agent to call ProcessPayment only',
     });
     processPaymentRole.addToPolicy(new iam.PolicyStatement({
       effect: iam.Effect.ALLOW,
       actions: ['bedrock-agentcore:ProcessPayment'],
+      resources: ['*'],
+    }));
+    processPaymentRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'bedrock-agentcore:CreateWorkloadIdentity',
+        'bedrock-agentcore:GetResourcePaymentToken',
+      ],
+      resources: ['*'],
+    }));
+    processPaymentRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: [
+        'secretsmanager:GetSecretValue',
+        'secretsmanager:DescribeSecret',
+      ],
+      resources: ['*'],
+    }));
+    processPaymentRole.addToPolicy(new iam.PolicyStatement({
+      effect: iam.Effect.ALLOW,
+      actions: ['kms:Decrypt'],
       resources: ['*'],
     }));
 
@@ -341,7 +365,7 @@ export class AgentCoreStack extends cdk.Stack {
       resources: [
         // Allow invoking any API Gateway in this account
         `arn:aws:execute-api:${this.region}:${this.account}:*/*/*/*`,
-        // Allow invoking API Gateways in us-east-1 (Lambda@Edge region)
+        // Allow invoking API Gateways in us-east-1 (WAF/CloudFront region)
         `arn:aws:execute-api:us-east-1:${this.account}:*/*/*/*`,
       ],
     }));
@@ -361,7 +385,7 @@ export class AgentCoreStack extends cdk.Stack {
       resources: [
         // Allow invoking Lambda functions with x402 prefix
         `arn:aws:lambda:${this.region}:${this.account}:function:x402-*`,
-        // Allow invoking Lambda@Edge functions in us-east-1
+        // Allow invoking CloudFront functions in us-east-1
         `arn:aws:lambda:us-east-1:${this.account}:function:x402-*`,
       ],
     }));
