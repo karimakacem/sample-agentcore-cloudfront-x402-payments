@@ -1036,7 +1036,7 @@ class TestIntegrationMCPToolDiscovery:
     4. 402 payment flow works end-to-end
     
     To run these tests:
-    1. Deploy the seller infrastructure (CloudFront + Lambda@Edge)
+    1. Deploy the seller infrastructure (CloudFront + WAF Monetization)
     2. Set SELLER_API_URL environment variable to the CloudFront URL
     3. Run: pytest -m integration tests/test_mcp_client.py
     

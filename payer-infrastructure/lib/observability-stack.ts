@@ -9,7 +9,7 @@ import { Construct } from 'constructs';
  * 
  * This stack creates comprehensive dashboards for monitoring:
  * - Payer Agent (AgentCore Gateway) metrics
- * - Seller Infrastructure (CloudFront + Lambda@Edge) metrics
+ * - Seller Infrastructure (CloudFront + WAF Monetization) metrics
  * - End-to-end payment flow metrics
  */
 
@@ -73,7 +73,7 @@ export class ObservabilityStack extends cdk.Stack {
         markdown: `# x402 Enterprise Demo - Overview Dashboard
 Monitor the complete payment flow from payer agent to seller infrastructure.
         
-**Architecture:** Payer Agent (AgentCore) → CloudFront (Seller) → Lambda@Edge (Payment Verification)`,
+**Architecture:** Payer Agent (AgentCore) → CloudFront (Seller) → WAF (Payment Verification + Settlement)`,
         width: 24,
         height: 2,
       }),
@@ -410,7 +410,7 @@ Monitor the AgentCore-based payer agent that handles payment signing and content
     this.sellerDashboard.addWidgets(
       new cloudwatch.TextWidget({
         markdown: `# x402 Seller Infrastructure Dashboard
-Monitor CloudFront distribution and Lambda@Edge payment verification.`,
+Monitor CloudFront distribution and WAF payment verification.`,
         width: 24,
         height: 2,
       }),
@@ -496,10 +496,10 @@ Monitor CloudFront distribution and Lambda@Edge payment verification.`,
       }),
     );
 
-    // Lambda@Edge Payment Verifier Metrics
+    // WAF Payment Verifier Metrics
     this.sellerDashboard.addWidgets(
       new cloudwatch.TextWidget({
-        markdown: '## Payment Verifier (Lambda@Edge)',
+        markdown: '## Payment Verifier (WAF)',
         width: 24,
         height: 1,
       }),

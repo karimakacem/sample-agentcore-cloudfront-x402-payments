@@ -6,7 +6,7 @@ This document provides comprehensive API documentation for the x402 payment-gate
 
 - [Overview](#overview)
 - [Authentication](#authentication)
-- [Seller API (CloudFront + Lambda@Edge)](#seller-api-cloudfront--lambdaedge)
+- [Seller API (CloudFront + WAF Monetization)](#seller-api-cloudfront--waf-monetization)
   - [Protected Content Endpoints](#protected-content-endpoints)
   - [Request/Response Flow](#requestresponse-flow)
   - [x402 Protocol Headers](#x402-protocol-headers)
@@ -37,7 +37,7 @@ This document provides comprehensive API documentation for the x402 payment-gate
 
 The x402 AWS Enterprise Demo consists of two main API surfaces:
 
-1. **Seller API**: CloudFront distribution with Lambda@Edge that serves payment-gated content using the x402 v2 protocol
+1. **Seller API**: CloudFront distribution with AWS WAF AI Traffic Monetization that serves payment-gated content using the x402 v2 protocol
 2. **Payer Agent API**: AgentCore Runtime that provides access to the AI agent for automated payment decisions
 
 ### Base URLs
@@ -74,11 +74,13 @@ Required IAM permission: `bedrock-agentcore:InvokeAgentRuntime`
 
 ---
 
-## Seller API (CloudFront + Lambda@Edge)
+## Seller API (CloudFront + WAF Monetization)
 
 ### Protected Content Endpoints
 
 All endpoints return JSON content and require x402 payment for access.
+
+> **Note:** For workshop simplicity, all content is served as static JSON from S3. In production, you can use API Gateway + Lambda as the CloudFront origin to serve dynamic content behind WAF monetization.
 
 #### GET /api/premium-article
 
@@ -110,9 +112,9 @@ Real-time weather data with current conditions and 5-day forecast.
 
 | Property | Value |
 |----------|-------|
-| Price | 0.0005 USDC (500 atomic units) |
+| Price | 0.001 USDC (1000 atomic units) |
 | Content Type | `application/json` |
-| Source | Dynamic (generated per request) |
+| Source | S3 bucket (static JSON) |
 
 **Response (200 OK with valid payment):**
 ```json
@@ -151,7 +153,7 @@ Cryptocurrency market analysis with real-time data.
 |----------|-------|
 | Price | 0.002 USDC (2000 atomic units) |
 | Content Type | `application/json` |
-| Source | Dynamic (generated per request) |
+| Source | S3 bucket (static JSON) |
 
 **Response (200 OK with valid payment):**
 ```json
@@ -731,7 +733,7 @@ paths:
 | Tool Name | Category | Price | Description |
 |-----------|----------|-------|-------------|
 | `get_premium_article` | content | 0.001 USDC | Premium article content |
-| `get_weather_data` | market-data | 0.0005 USDC | Real-time weather data |
+| `get_weather_data` | market-data | 0.001 USDC | Real-time weather data |
 | `get_market_analysis` | market-data | 0.002 USDC | Crypto market analysis |
 | `get_research_report` | research | 0.005 USDC | Blockchain research report |
 
@@ -1045,7 +1047,7 @@ curl -X GET "https://<gateway-url>/v1/mcp/tools" \
 | Tool Name | Category | Price | Description |
 |-----------|----------|-------|-------------|
 | `get_premium_article` | content | 0.001 USDC | Premium article about AI and blockchain |
-| `get_weather_data` | market-data | 0.0005 USDC | Real-time weather data and forecast |
+| `get_weather_data` | market-data | 0.001 USDC | Real-time weather data and forecast |
 | `get_market_analysis` | market-data | 0.002 USDC | Cryptocurrency market analysis |
 | `get_research_report` | research | 0.005 USDC | Blockchain technology research report |
 
@@ -1147,14 +1149,14 @@ Retrieves real-time weather data and 5-day forecast.
 ```json
 {
   "name": "get_weather_data",
-  "description": "Get real-time weather data and 5-day forecast for San Francisco. Returns current conditions (temperature, humidity, wind) and daily forecasts. Requires x402 payment: 500 USDC units (0.0005 USDC) on Base Sepolia testnet.",
+  "description": "Get real-time weather data and 5-day forecast for San Francisco. Returns current conditions (temperature, humidity, wind) and daily forecasts. Requires x402 payment: 1000 USDC units (0.001 USDC) on Base Sepolia testnet.",
   "category": "market-data",
   "tags": ["weather", "forecast", "real-time", "x402-payment"],
   "priority": 2,
   "requires_payment": true,
   "payment": {
-    "price_units": "500",
-    "price_display": "0.0005 USDC",
+    "price_units": "1000",
+    "price_display": "0.001 USDC",
     "asset": "USDC",
     "network": "Base Sepolia"
   }
@@ -1733,7 +1735,7 @@ interface SettlementResponse {
 
 ### Seller API
 
-No explicit rate limiting at the application level. CloudFront and Lambda@Edge have built-in limits.
+No explicit rate limiting at the application level. CloudFront and AWS WAF have built-in limits.
 
 ### AgentCore Gateway
 
@@ -1769,7 +1771,7 @@ The x402 facilitator service handles payment verification and settlement.
 
 | Endpoint | URL |
 |----------|-----|
-| Production | `https://facilitator.x402.org` |
+| Production | Coinbase x402 facilitator (embedded in WAF Monetize rules) |
 
 ### POST /verify
 

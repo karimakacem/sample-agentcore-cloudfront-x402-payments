@@ -109,14 +109,19 @@ cdk deploy
 cdk import
 ```
 
-### Lambda@Edge deployment fails
+### WAF web ACL not associated with CloudFront
 
-**Cause**: Lambda@Edge must be deployed to `us-east-1`.
+**Cause**: WAF web ACL (containing the Monetize rules) must be deployed to `us-east-1` and associated with the CloudFront distribution.
 
 **Solution**:
-Lambda@Edge requires `us-east-1`, which is hardcoded in the CDK stack. No `.env` configuration needed.
+The WAF web ACL is deployed to `us-east-1` and associated automatically by the CDK stack. If 402 responses are not being returned, verify the association:
+```bash
+aws wafv2 get-web-acl-for-resource \
+  --resource-arn <CLOUDFRONT_DISTRIBUTION_ARN> \
+  --region us-east-1
+```
 
-Redeploy:
+Redeploy if missing:
 ```bash
 cd seller-infrastructure
 cdk deploy
@@ -283,23 +288,28 @@ Check the `X-PAYMENT-REQUIRED` header for specific error:
 **Solution**:
 1. Check CloudFront distribution settings
 2. Verify S3 bucket policy allows CloudFront access
-3. Check CORS headers in Lambda@Edge response
+3. Check CORS headers configured in the WAF rule response
 
-### Lambda@Edge not triggering
+### 402 not returned by CloudFront
 
-**Cause**: Function not associated with CloudFront behavior.
+**Cause**: WAF web ACL not associated with the CloudFront distribution, or Monetize rule not enabled.
 
 **Solution**:
-1. Verify Lambda@Edge association in CloudFront console
-2. Check function is deployed to `us-east-1`
-3. Ensure function has correct execution role
+1. Verify WAF web ACL association:
+```bash
+aws wafv2 get-web-acl-for-resource \
+  --resource-arn <CLOUDFRONT_DISTRIBUTION_ARN> \
+  --region us-east-1
+```
+2. Check the Monetize rule is enabled in the WAF console (us-east-1)
+3. Redeploy seller-infrastructure if the association is missing
 
 ### Content not found (404)
 
 **Cause**: Content path not configured or S3 content not uploaded.
 
 **Solution**:
-1. Check `content-config.ts` for the endpoint
+1. Check `seller-stack.ts` for the endpoint configuration
 2. For S3 content, upload using:
 ```bash
 cd seller-infrastructure
@@ -308,12 +318,12 @@ cd seller-infrastructure
 
 ### Payment verification failing
 
-**Cause**: Facilitator service unreachable or payload malformed.
+**Cause**: Coinbase facilitator unreachable or payload malformed.
 
 **Solution**:
-1. Check facilitator URL is correct: `https://facilitator.x402.org`
-2. Verify payment payload structure matches x402 v2 spec
-3. Check Lambda@Edge logs in CloudWatch
+1. Verify payment payload structure matches x402 v2 spec
+2. Check WAF sampled requests in CloudWatch for rule evaluation details
+3. Confirm the WAF Monetize rule is configured with the correct recipient address
 
 ---
 
@@ -521,10 +531,7 @@ for tool in tools:
 curl -v "$X402_SELLER_CLOUDFRONT_URL/api/premium-article"
 ```
 
-4. Check Lambda@Edge logs for the request:
-```bash
-aws logs tail /aws/lambda/us-east-1.PaymentVerifier --follow
-```
+4. Check WAF sampled requests in the AWS console (WAF → Web ACLs → us-east-1 → Sampled requests)
 
 ### Gateway SigV4 Authentication Fails
 
@@ -651,7 +658,7 @@ aws cloudwatch get-metric-statistics \
   --statistics Average
 ```
 
-3. Check Lambda@Edge execution time (max 30 seconds for viewer-request)
+3. Check WAF rule processing time in CloudWatch WAF metrics
 
 4. Verify CloudFront origin timeout settings
 
@@ -855,11 +862,11 @@ print(paid)
 ### Check CloudWatch logs
 
 ```bash
-# Lambda@Edge logs (check multiple regions)
-aws logs describe-log-groups --log-group-name-prefix "/aws/lambda/us-east-1"
+# WAF logs (us-east-1)
+aws logs describe-log-groups --log-group-name-prefix "aws-waf-logs-" --region us-east-1
 
-# Get recent logs
-aws logs tail /aws/lambda/us-east-1.PaymentVerifier --follow
+# CloudFront access logs
+aws logs tail /aws/cloudfront/<distribution-id> --follow
 ```
 
 ### Verify AWS credentials
